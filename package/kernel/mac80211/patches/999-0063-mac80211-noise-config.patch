@@ -1,0 +1,310 @@
+--- a/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c
++++ b/drivers/net/wireless/ath/ath9k/ar9003_eeprom.c
+@@ -4131,9 +4131,13 @@ static void ar9003_hw_thermo_cal_apply(s
+ 	}
+ }
+ 
++#define CCA_MASK 0x7f1ff
++#define CCA_MASK_S 0
++
+ static void ar9003_hw_apply_minccapwr_thresh(struct ath_hw *ah,
+ 					     bool is2ghz)
+ {
++	struct ath_common *common = ath9k_hw_common(ah);
+ 	struct ar9300_eeprom *eep = &ah->eeprom.ar9300_eep;
+ 	const u_int32_t cca_ctrl[AR9300_MAX_CHAINS] = {
+ 		AR_PHY_CCA_CTRL_0,
+@@ -4142,6 +4146,17 @@ static void ar9003_hw_apply_minccapwr_th
+ 	};
+ 	int chain;
+ 	u32 val;
++	
++	if (ah->cca_thresh[0])
++	{
++		u32 reg[2];
++		REG_RMW_FIELD(ah, cca_ctrl[0], CCA_MASK, ah->cca_thresh[0]);
++		REG_RMW_FIELD(ah, cca_ctrl[1], CCA_MASK, ah->cca_thresh[1]);
++		reg[0] = REG_READ(ah, cca_ctrl[0]);
++		reg[1] = REG_READ(ah, cca_ctrl[1]);
++		ath_dbg(common, ANY, "CCA0 is 0x%08x, CCA1 is 0x%08x\n", reg[0],reg[1]);
++		return;
++	}
+ 
+ 	if (is2ghz) {
+ 		if (!(eep->base_ext1.misc_enable & BIT(2)))
+@@ -4152,12 +4167,16 @@ static void ar9003_hw_apply_minccapwr_th
+ 	}
+ 
+ 	for (chain = 0; chain < AR9300_MAX_CHAINS; chain++) {
++		unsigned int reg[2];
+ 		if (!(ah->caps.tx_chainmask & BIT(chain)))
+ 			continue;
+-
++		reg[0] = REG_READ(ah, cca_ctrl[chain]);
+ 		val = ar9003_modal_header(ah, is2ghz)->noiseFloorThreshCh[chain];
+ 		REG_RMW_FIELD(ah, cca_ctrl[chain],
+ 			      AR_PHY_EXT_CCA0_THRESH62_1, val);
++		reg[1] = REG_READ(ah, cca_ctrl[chain]);
++		ath_dbg(common, ANY, "CCA%d is 0x%08x to 0x%08x, after set thresh is %d\n", chain,reg[0],reg[1],val);
++
+ 	}
+ 
+ }
+--- a/drivers/net/wireless/ath/ath9k/debug.c
++++ b/drivers/net/wireless/ath/ath9k/debug.c
+@@ -1348,6 +1348,73 @@ static const struct file_operations fops
+ 	.owner = THIS_MODULE
+ };
+ 
++#define AR_PHY_CCA                  0x9864
++#define AR9280_PHY_CCA_THRESH62     0x000FF000
++#define AR9280_PHY_CCA_THRESH62_S   12
++#define AR_PHY_CCA_THRESH62         0x0007F000
++#define AR_PHY_CCA_THRESH62_S       12
++#define AR_PHY_CCA_CTRL_0 0x9e20
++#define AR_PHY_CCA_CTRL_1 0xae20
++#define AR_PHY_CCA_CTRL_2 0xbe20
++#define AR_PHY_EXT_CCA0_THRESH62    0x000000FF
++#define AR_PHY_EXT_CCA0_THRESH62_S  0
++#define AR_PHY_EXT_CCA0_THRESH62_1    0x000001FF
++#define AR_PHY_EXT_CCA0_THRESH62_1_S  0
++
++static ssize_t read_file_cca_thresh(struct file *file, char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	char buf[128];
++	unsigned int reg[4];
++	unsigned int len;
++
++	reg[3] = REG_READ(sc->sc_ah, AR_PHY_CCA);
++	
++	reg[0] = REG_READ(sc->sc_ah, AR_PHY_CCA_CTRL_0);
++	reg[1] = REG_READ(sc->sc_ah, AR_PHY_CCA_CTRL_1);
++	reg[2] = REG_READ(sc->sc_ah, AR_PHY_CCA_CTRL_2);
++
++	len = sprintf(buf, "0x%08x, 0x%08x, 0x%08x, 0x%08x\n", reg[3], reg[0], reg[1], reg[2]);
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t write_file_cca_thresh(struct file *file, const char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	struct ath_hw *ah = sc->sc_ah;
++	struct ath_common *common = ath9k_hw_common(sc->sc_ah);
++	unsigned long chan_bw;
++	char buf[32];
++	ssize_t len;
++
++	len = min(count, sizeof(buf) - 1);
++	if (copy_from_user(buf, user_buf, len))
++		return -EFAULT;
++
++	buf[len] = '\0';
++	if (kstrtoul(buf, 0, &chan_bw))
++		return -EINVAL;
++	
++	ah->cca_thresh[0] = (u32)chan_bw;
++	ah->cca_thresh[1] = (u32)chan_bw;
++	ah->cca_flag = true;
++	
++	if (!test_bit(ATH_OP_INVALID, &common->op_flags))
++		ath9k_ops.config(sc->hw, IEEE80211_CONF_CHANGE_CHANNEL);
++
++	return count;
++}
++
++static const struct file_operations fops_snr_cfg = {
++	.read = read_file_cca_thresh,
++	.write = write_file_cca_thresh,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
+ 
+ static ssize_t read_file_chan_bw(struct file *file, char __user *user_buf,
+ 			     size_t count, loff_t *ppos)
+@@ -1562,6 +1629,8 @@ int ath9k_init_debug(struct ath_hw *ah)
+ 			    &fops_eeprom);
+ 	debugfs_create_file("chanbw", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
+ 			    sc, &fops_chanbw);
++	debugfs_create_file("snr_cfg", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
++			    sc, &fops_snr_cfg);
+ 	debugfs_create_file("is_nb", S_IRUSR | S_IWUSR, sc->debug.debugfs_phy,
+                             sc, &fops_is_nb);
+ #ifdef CONFIG_MAC80211_LEDS
+--- a/drivers/net/wireless/ath/ath9k/eeprom_def.c
++++ b/drivers/net/wireless/ath/ath9k/eeprom_def.c
+@@ -519,6 +519,8 @@ static void ath9k_hw_def_set_board_value
+ 	int i, regChainOffset;
+ 	u8 txRxAttenLocal;
+ 
++	struct ath_common *common = ath9k_hw_common(ah);
++
+ 	pModal = &(eep->modalHeader[IS_CHAN_2GHZ(chan)]);
+ 	txRxAttenLocal = IS_CHAN_2GHZ(chan) ? 23 : 44;
+ 
+@@ -628,12 +630,14 @@ static void ath9k_hw_def_set_board_value
+ 		REG_RMW_FIELD(ah, AR_PHY_EXT_CCA0,
+ 			      AR_PHY_EXT_CCA0_THRESH62,
+ 			      pModal->thresh62);
++		ath_dbg(common, FATAL, "AR_SREV_9280_20_OR_LATER set thread %d\n", pModal->thresh62);
+ 	} else {
+ 		REG_RMW_FIELD(ah, AR_PHY_CCA, AR_PHY_CCA_THRESH62,
+ 			      pModal->thresh62);
+ 		REG_RMW_FIELD(ah, AR_PHY_EXT_CCA,
+ 			      AR_PHY_EXT_CCA_THRESH62,
+ 			      pModal->thresh62);
++		ath_dbg(common, FATAL, "AR_SREV_9280_20_BEFORE set thread %d\n", pModal->thresh62);
+ 	}
+ 
+ 	if (AR5416_VER_MASK >= AR5416_EEP_MINOR_VER_2) {
+--- a/drivers/net/wireless/ath/ath9k/eeprom.c
++++ b/drivers/net/wireless/ath/ath9k/eeprom.c
+@@ -561,14 +561,19 @@ void ath9k_hw_get_gain_boundaries_pdadcs
+ int ath9k_hw_eeprom_init(struct ath_hw *ah)
+ {
+ 	int status;
++	struct ath_common *common = ath9k_hw_common(ah);
+ 
+-	if (AR_SREV_9300_20_OR_LATER(ah))
++	if (AR_SREV_9300_20_OR_LATER(ah)){
++		ath_dbg(common, FATAL, "eeprom is eep_ar9300_ops!\n");
+ 		ah->eep_ops = &eep_ar9300_ops;
+-	else if (AR_SREV_9287(ah)) {
++	} else if (AR_SREV_9287(ah)) {
++		ath_dbg(common, FATAL, "eeprom is eep_ar9287_ops!\n");
+ 		ah->eep_ops = &eep_ar9287_ops;
+ 	} else if (AR_SREV_9285(ah) || AR_SREV_9271(ah)) {
++		ath_dbg(common, FATAL, "eeprom is eep_ar9285_ops!\n");
+ 		ah->eep_ops = &eep_4k_ops;
+ 	} else {
++		ath_dbg(common, FATAL, "eeprom is eep_def_ops!\n");
+ 		ah->eep_ops = &eep_def_ops;
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath9k/calib.c
++++ b/drivers/net/wireless/ath/ath9k/calib.c
+@@ -57,20 +57,18 @@ static struct ath_nf_limits *ath9k_hw_ge
+ 	return limit;
+ }
+ 
+-static s16 ath9k_hw_get_default_nf(struct ath_hw *ah,
+-				   struct ath9k_channel *chan)
++static s16 ath9k_hw_get_default_nf(struct ath_hw *ah, struct ath9k_channel *chan, int chain)
+ {
+ 	return ath9k_hw_get_nf_limits(ah, chan)->nominal;
+ }
+ 
+-s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan,
+-			   s16 nf)
++s16 ath9k_hw_getchan_noise(struct ath_hw *ah, struct ath9k_channel *chan, s16 nf)
+ {
+-	s8 noise = ATH_DEFAULT_NOISE_FLOOR;
++	s8 noise = ath9k_hw_get_default_nf(ah, chan, 0);
+ 
+ 	if (nf) {
+-		s8 delta = nf - ATH9K_NF_CAL_NOISE_THRESH -
+-			   ath9k_hw_get_default_nf(ah, chan);
++		s8 delta = nf - ATH9K_NF_CAL_NOISE_THRESH - ath9k_hw_get_default_nf(ah, chan, 0);
++		if (delta > 0)
+ 			noise += delta;
+ 	}
+ 	return noise;
+@@ -239,7 +237,7 @@ int ath9k_hw_loadnf(struct ath_hw *ah, s
+ 	unsigned i, j;
+ 	u8 chainmask = (ah->rxchainmask << 3) | ah->rxchainmask;
+ 	struct ath_common *common = ath9k_hw_common(ah);
+-	s16 default_nf = ath9k_hw_get_default_nf(ah, chan);
++	s16 default_nf = ath9k_hw_get_nf_limits(ah, chan)->nominal; 
+ 
+ 	if (ah->caldata)
+ 		h = ah->caldata->nfCalHist;
+@@ -254,9 +252,9 @@ int ath9k_hw_loadnf(struct ath_hw *ah, s
+ 
+ 			if (h)
+ 				nfval = h[i].privNF;
+-			else
++			else {
+ 				nfval = default_nf;
+-
++}
+ 			REG_RMW(ah, ah->nf_regs[i],
+ 				(((u32) nfval << 1) & 0x1ff), 0x1ff);
+ 		}
+@@ -401,18 +399,21 @@ void ath9k_init_nfcal_hist_buffer(struct
+ 	struct ath9k_nfcal_hist *h;
+ 	s16 default_nf;
+ 	int i, j;
++	int k = 0;
+ 
+ 	ah->caldata->channel = chan->channel;
+ 	ah->caldata->channelFlags = chan->channelFlags;
+ 	h = ah->caldata->nfCalHist;
+-	default_nf = ath9k_hw_get_default_nf(ah, chan);
++	default_nf = ath9k_hw_get_default_nf(ah, chan, k);
+ 	for (i = 0; i < NUM_NF_READINGS; i++) {
+ 		h[i].currIndex = 0;
+ 		h[i].privNF = default_nf;
+ 		h[i].invalidNFcount = AR_PHY_CCA_FILTERWINDOW_LENGTH;
+ 		for (j = 0; j < ATH9K_NF_CAL_HIST_MAX; j++) {
+-			h[i].nfCalBuffer[j] = default_nf;
++			h[i].nfCalBuffer[j] = h[i].privNF;
+ 		}
++		if (++k >= AR5416_MAX_CHAINS)
++			k = 0;
+ 	}
+ }
+ 
+--- a/drivers/net/wireless/ath/ath9k/hw.h
++++ b/drivers/net/wireless/ath/ath9k/hw.h
+@@ -795,6 +795,8 @@ struct ath_hw {
+ 		struct ar9300_eeprom ar9300_eep;
+ 	} eeprom;
+ 	const struct eeprom_ops *eep_ops;
++	u32 cca_thresh[3];
++	bool cca_flag;
+ 
+ 	bool sw_mgmt_crypto_tx;
+ 	bool sw_mgmt_crypto_rx;
+--- a/drivers/net/wireless/ath/ath9k/main.c
++++ b/drivers/net/wireless/ath/ath9k/main.c
+@@ -1442,8 +1442,19 @@ static int ath9k_config(struct ieee80211
+ 	}
+ 
+ 	if (!ath9k_is_chanctx_enabled() && (changed & IEEE80211_CONF_CHANGE_CHANNEL)) {
+-		ctx->offchannel = !!(conf->flags & IEEE80211_CONF_OFFCHANNEL);
+-		ath_chanctx_set_channel(sc, ctx, &hw->conf.chandef);
++		if (ah->cca_flag) {
++			int r;
++			struct ath9k_channel *hchan = sc->sc_ah->curchan;
++			ah->cca_flag = false;
++			r = ath_reset(sc, hchan);
++			ath_dbg(common, CONFIG, "ath reset because of thresh, ret = 0x%08x\n", r);
++			if (r)
++				return r;
++		}
++		else {
++			ctx->offchannel = !!(conf->flags & IEEE80211_CONF_OFFCHANNEL);
++			ath_chanctx_set_channel(sc, ctx, &hw->conf.chandef);
++		}
+ 	}
+ 
+ 	mutex_unlock(&sc->mutex);
+--- a/drivers/net/wireless/ath/ath9k/init.c
++++ b/drivers/net/wireless/ath/ath9k/init.c
+@@ -550,6 +550,12 @@ static int ath9k_init_softc(u16 devid, s
+ 	ah->reg_ops.multi_read = ath9k_multi_ioread32;
+ 	ah->reg_ops.write = ath9k_iowrite32;
+ 	ah->reg_ops.rmw = ath9k_reg_rmw;
++	/* add 999-0063 patch */
++	ah->cca_thresh[0] = 0;
++	ah->cca_thresh[1] = 0;
++	ah->cca_thresh[2] = 0;
++	ah->cca_flag = false;
++
+ 	ah->is_nb = false;
+ 	pCap = &ah->caps;
+ 

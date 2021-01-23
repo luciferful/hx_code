@@ -1,0 +1,49 @@
+Index: procd-2015-07-24/state.c
+===================================================================
+--- procd-2015-07-24.orig/state.c
++++ procd-2015-07-24/state.c
+@@ -113,6 +113,7 @@ static void state_enter(void)
+ 		procd_connect_ubus();
+ 		service_init();
+ 		service_start_early("ubus", ubus_cmd);
++		LOG("- STATE UBUS DONE -\n");
+ 		break;
+ 
+ 	case STATE_INIT:
+@@ -180,6 +181,7 @@ void procd_state_next(void)
+ {
+ 	DEBUG(4, "Change state %d -> %d\n", state, state + 1);
+ 	state++;
++	LOG("- state %d begin  -\n");
+ 	state_enter();
+ }
+ 
+Index: procd-2015-07-24/ubus.c
+===================================================================
+--- procd-2015-07-24.orig/ubus.c
++++ procd-2015-07-24/ubus.c
+@@ -45,6 +45,7 @@ ubus_connect_cb(struct uloop_timeout *ti
+ 	ctx = ubus_connect(ubus_socket);
+ 
+ 	if (!ctx) {
++		LOG("- %s: ubus_connect failed, sock = %d", __func__, ubus_socket);
+ 		DEBUG(4, "Connection to ubus failed\n");
+ 		uloop_timeout_set(&ubus_timer, 1000);
+ 		return;
+Index: procd-2015-07-24/procd.c
+===================================================================
+--- procd-2015-07-24.orig/procd.c
++++ procd-2015-07-24/procd.c
+@@ -51,10 +51,12 @@ int main(int argc, char **argv)
+ 	}
+ 
+ 	while ((ch = getopt(argc, argv, "d:s:h:")) != -1) {
++		LOG(" -s ch = %d, h=%d, s=%d,  -\n", ch, (int)('h'), (int)('s'));
+ 		switch (ch) {
+ 		case 'h':
+ 			return hotplug_run(optarg);
+ 		case 's':
++			LOG(" - %s: ubus path = %s\n", __func__, optarg);
+ 			ubus_socket = optarg;
+ 			break;
+ 		case 'd':

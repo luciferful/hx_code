@@ -1,0 +1,85 @@
+--- a/net/batman-adv/bat_v_ogm.c
++++ b/net/batman-adv/bat_v_ogm.c
+@@ -171,6 +171,18 @@ static void batadv_v_ogm_send(struct wor
+ 	memcpy(pkt_buff, ogm_buff, ogm_buff_len);
+ 
+ 	ogm_packet = (struct batadv_ogm2_packet *)skb->data;
++
++	{       
++                int len = strlen(bat_priv->hostname);
++                if (len >= 31) len = 31;
++                memcpy(ogm_packet->hostname, bat_priv->hostname, len);
++                ogm_packet->hostname[len] = '\0';
++                len = strlen(bat_priv->ipv4);
++                if (len >= 31) len = 31; 
++                memcpy(ogm_packet->ipv4, bat_priv->ipv4, len);
++                ogm_packet->ipv4[len] = '\0';
++        }
++
+ 	ogm_packet->seqno = htonl(atomic_read(&bat_priv->bat_v.ogm_seqno));
+ 	atomic_inc(&bat_priv->bat_v.ogm_seqno);
+ 	ogm_packet->tvlv_len = htons(tvlv_len);
+@@ -742,6 +754,17 @@ static void batadv_v_ogm_process(const s
+ 	if (!orig_node)
+ 		return;
+ 
++	{
++                int len = strlen(ogm_packet->hostname);
++                memcpy(orig_node->hostname, ogm_packet->hostname, len);
++                orig_node->hostname[len] = '\0';
++                len = strlen(ogm_packet->ipv4);
++                memcpy(orig_node->ipv4, ogm_packet->ipv4, len);
++                orig_node->ipv4[len] = '\0';
++		batadv_dbg(BATADV_DBG_BATMAN, bat_priv, "ip = %s, name = %s\n", orig_node->ipv4, orig_node->hostname);
++	}
++
++
+ 	neigh_node = batadv_neigh_node_get_or_create(orig_node, if_incoming,
+ 						     ethhdr->h_source);
+ 	if (!neigh_node)
+@@ -937,6 +960,23 @@ int batadv_v_ogm_init(struct batadv_priv
+ 	ogm_packet->flags = BATADV_NO_FLAGS;
+ 	ogm_packet->throughput = htonl(BATADV_THROUGHPUT_MAX_VALUE);
+ 
++	printk(KERN_DEBUG "%s: ogm packet len = %d\n", __func__, BATADV_OGM2_HLEN);
++	
++        {
++#if 1
++                int len = strlen(bat_priv->hostname);
++                if (len >= 31) len = 31;
++                memcpy(ogm_packet->hostname, bat_priv->hostname, len);
++                ogm_packet->hostname[len] = '\0';
++                len = strlen(bat_priv->ipv4);
++                if (len >= 31) len = 31;
++                memcpy(ogm_packet->ipv4, bat_priv->ipv4, len);
++                ogm_packet->ipv4[len] = '\0';
++                printk(KERN_DEBUG "%s: ipv4=%s, name=%s\n", __func__, ogm_packet->hostname, ogm_packet->ipv4);
++#endif
++        }
++
++
+ 	/* randomize initial seqno to avoid collision */
+ 	get_random_bytes(&random_seqno, sizeof(random_seqno));
+ 	atomic_set(&bat_priv->bat_v.ogm_seqno, random_seqno);
+--- a/net/batman-adv/packet.h
++++ b/net/batman-adv/packet.h
+@@ -251,6 +251,8 @@ struct batadv_ogm2_packet {
+ 	u8     flags;
+ 	__be32 seqno;
+ 	u8     orig[ETH_ALEN];
++	char   hostname[32];
++	char   ipv4[32];
+ 	struct batadv_elp_packet elp_packet;
+ 	__be16 tvlv_len;
+ 	__be32 throughput;
+--- a/net/batman-adv/types.h
++++ b/net/batman-adv/types.h
+@@ -323,6 +323,8 @@ struct batadv_orig_bat_iv {
+  */
+ struct batadv_orig_node {
+ 	u8 orig[ETH_ALEN];
++	char hostname[32];
++	char ipv4[32];
+ 	struct hlist_head ifinfo_list;
+ 	struct batadv_orig_ifinfo *last_bonding_candidate;
+ #ifdef CONFIG_BATMAN_ADV_DAT

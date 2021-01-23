@@ -1,0 +1,13 @@
+Index: batman-adv-2016.5/net/batman-adv/distributed-arp-table.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/distributed-arp-table.c
++++ batman-adv-2016.5/net/batman-adv/distributed-arp-table.c
+@@ -61,7 +61,7 @@ static void batadv_dat_start_timer(struc
+ {
+ 	INIT_DELAYED_WORK(&bat_priv->dat.work, batadv_dat_purge);
+ 	queue_delayed_work(batadv_event_workqueue, &bat_priv->dat.work,
+-			   msecs_to_jiffies(10000));
++			   msecs_to_jiffies(4000));
+ }
+ 
+ /**

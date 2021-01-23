@@ -1,0 +1,11 @@
+--- a/drivers/net/wireless/ath/ath9k/hw.h
++++ b/drivers/net/wireless/ath/ath9k/hw.h
+@@ -173,7 +173,7 @@
+ #define ATH9K_NUM_DMA_DEBUG_REGS    8
+ #define ATH9K_NUM_QUEUES            10
+ 
+-#define MAX_RATE_POWER              63
++#define MAX_RATE_POWER              74     /* 5W */		
+ #define AH_WAIT_TIMEOUT             100000 /* (us) */
+ #define AH_TSF_WRITE_TIMEOUT        100    /* (us) */
+ #define AH_TIME_QUANTUM             10

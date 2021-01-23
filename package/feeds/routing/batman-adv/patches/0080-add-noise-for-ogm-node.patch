@@ -1,0 +1,140 @@
+--- a/net/batman-adv/bat_v_ogm.c
++++ b/net/batman-adv/bat_v_ogm.c
+@@ -38,6 +38,7 @@
+ #include <linux/string.h>
+ #include <linux/types.h>
+ #include <linux/workqueue.h>
++#include <net/cfg80211.h>
+ 
+ #include "bat_algo.h"
+ #include "hard-interface.h"
+@@ -51,6 +52,43 @@
+ #include "tvlv.h"
+ #include "bat_v_elp.h"
+ 
++extern int cfg80211_get_noise(struct net_device *net_dev, char *noise);
++static int batadv_v_get_noise(struct batadv_priv *bat_priv, struct batadv_hard_iface *hard_iface, char *noise)
++{
++	int ret = 0;
++	char nf;
++
++	if (hard_iface->net_dev == NULL)
++		batadv_dbg(BATADV_DBG_BATMAN, bat_priv, "%s: hard_iface->net_dev == NULL\n", __func__);
++	else
++		batadv_dbg(BATADV_DBG_BATMAN, bat_priv, "%s: hard_iface->net_dev->name = %s\n", __func__, 
++				hard_iface->net_dev->name);
++
++	if (batadv_is_wifi_hardif(hard_iface))
++	{
++		if (!batadv_is_cfg80211_hardif(hard_iface))
++			return -1;
++
++		if (hard_iface->net_dev == NULL)
++			return -2;
++
++		if (memcmp(hard_iface->net_dev->name, "wlan1", sizeof("wlan1")) == 0)
++		{
++			ret = cfg80211_get_noise(hard_iface->net_dev, &nf);
++			if (ret != 0)
++				return ret;
++
++			*noise = nf;
++		}
++	}
++	else
++	{
++		*noise = 0x80;
++	}
++
++	return ret;
++}
++
+ /**
+  * batadv_v_ogm_orig_get - retrieve and possibly create an originator node
+  * @bat_priv: the bat priv with all the soft interface information
+@@ -249,6 +287,18 @@ static void batadv_v_ogm_send(struct wor
+ 			}
+ 		}	
+ 
++		{
++			int ret;
++			char noise = -127;
++			ret = batadv_v_get_noise(bat_priv, hard_iface, &noise);
++			if (ret != 0)
++				batadv_dbg(BATADV_DBG_BATMAN, bat_priv,"%s: call get_noise error, ret=%d\n", __func__, ret);
++			else
++				batadv_dbg(BATADV_DBG_BATMAN, bat_priv,"%s: call get_noise success, noise=%d\n", __func__, noise);
++			
++			ogm_packet->noise = noise;
++		}
++
+ 		/* this skb gets consumed by batadv_v_ogm_send_to_if() */
+ 		skb_tmp = skb_clone(skb, GFP_ATOMIC);
+ 		if (!skb_tmp) {
+@@ -764,6 +814,10 @@ static void batadv_v_ogm_process(const s
+ 		batadv_dbg(BATADV_DBG_BATMAN, bat_priv, "ip = %s, name = %s\n", orig_node->ipv4, orig_node->hostname);
+ 	}
+ 
++	{
++		orig_node->noise = ogm_packet->noise;
++	}
++
+ 
+ 	neigh_node = batadv_neigh_node_get_or_create(orig_node, if_incoming,
+ 						     ethhdr->h_source);
+--- a/net/batman-adv/packet.h
++++ b/net/batman-adv/packet.h
+@@ -251,6 +251,7 @@ struct batadv_ogm2_packet {
+ 	u8     flags;
+ 	__be32 seqno;
+ 	u8     orig[ETH_ALEN];
++	s8     noise;
+ 	char   hostname[32];
+ 	char   ipv4[32];
+ 	struct batadv_elp_packet elp_packet;
+--- a/net/batman-adv/types.h
++++ b/net/batman-adv/types.h
+@@ -325,6 +325,7 @@ struct batadv_orig_node {
+ 	u8 orig[ETH_ALEN];
+ 	char hostname[32];
+ 	char ipv4[32];
++	s8 noise;
+ 	s8 signal;
+ 	s8 signal_avg;
+ 	struct hlist_head ifinfo_list;
+--- a/compat-include/net/cfg80211.h
++++ b/compat-include/net/cfg80211.h
+@@ -11,12 +11,23 @@
+ #define cfg80211_get_station(dev, mac_addr, sinfo) \
+ 	batadv_cfg80211_get_station(dev, mac_addr, sinfo)
+ 
++#define cfg80211_get_noise(dev, noise) \
++	batadv_cfg80211_get_noise(dev, noise)
++
+ static inline int batadv_cfg80211_get_station(struct net_device *dev,
+ 					      const u8 *mac_addr,
+ 					      struct station_info *sinfo)
+ {
+ 	return -ENOENT;
+ }
++
++
++static inline int batadv_cfg80211_get_noise(struct net_device *dev, char *noise)
++{
++	return -ENOENT;
++}
++
++
+ #endif
+ 
+ #endif /* < KERNEL_VERSION(4, 8, 0) */
+--- a/compat.h
++++ b/compat.h
+@@ -137,6 +137,7 @@ static int __batadv_interface_kill_vid(s
+  * went wrong. It will then decide what to do.
+  */
+ #define cfg80211_get_station(_a, _b, _c) (1)
++#define cfg80211_get_noise(_a,_b) (3)
+ /* the following define substitute the expected_throughput field with a random
+  * one existing in the station_info struct. It can be random because due to the
+  * define above it will never be used. We need it only to make the code compile

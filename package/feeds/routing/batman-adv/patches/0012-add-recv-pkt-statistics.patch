@@ -1,0 +1,276 @@
+Index: batman-adv-2016.5/net/batman-adv/debugfs.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/debugfs.c
++++ batman-adv-2016.5/net/batman-adv/debugfs.c
+@@ -43,6 +43,7 @@
+ #include "network-coding.h"
+ #include "originator.h"
+ #include "translation-table.h"
++#include "routing.h"
+ 
+ static struct dentry *batadv_debugfs;
+ 
+@@ -95,6 +96,13 @@ static int batadv_transtable_global_open
+ 	return single_open(file, batadv_tt_global_seq_print_text, net_dev);
+ }
+ 
++static int batadv_recv_stats_open(struct inode *inode, struct file *file)
++{
++	struct net_device *net_dev = (struct net_device *)inode->i_private;
++
++	return single_open(file, batadv_recv_stats_print_text, net_dev);
++}
++
+ #ifdef CONFIG_BATMAN_ADV_BLA
+ static int batadv_bla_claim_table_open(struct inode *inode, struct file *file)
+ {
+@@ -198,6 +206,7 @@ static BATADV_DEBUGINFO(neighbors, 0444,
+ static BATADV_DEBUGINFO(originators, 0444, batadv_originators_open);
+ static BATADV_DEBUGINFO(gateways, 0444, batadv_gateways_open);
+ static BATADV_DEBUGINFO(transtable_global, 0444, batadv_transtable_global_open);
++static BATADV_DEBUGINFO(recv_stats, 0444, batadv_recv_stats_open);
+ #ifdef CONFIG_BATMAN_ADV_BLA
+ static BATADV_DEBUGINFO(bla_claim_table, 0444, batadv_bla_claim_table_open);
+ static BATADV_DEBUGINFO(bla_backbone_table, 0444,
+@@ -219,6 +228,7 @@ static struct batadv_debuginfo *batadv_m
+ 	&batadv_debuginfo_originators,
+ 	&batadv_debuginfo_gateways,
+ 	&batadv_debuginfo_transtable_global,
++	&batadv_debuginfo_recv_stats,
+ #ifdef CONFIG_BATMAN_ADV_BLA
+ 	&batadv_debuginfo_bla_claim_table,
+ 	&batadv_debuginfo_bla_backbone_table,
+Index: batman-adv-2016.5/net/batman-adv/hard-interface.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/hard-interface.c
++++ batman-adv-2016.5/net/batman-adv/hard-interface.c
+@@ -749,6 +749,8 @@ int batadv_hardif_enable_interface(struc
+ 
+ 	hard_iface->soft_iface = soft_iface;
+ 	bat_priv = netdev_priv(hard_iface->soft_iface);
++	memset((void*)&bat_priv->recv_pkt_stats, 0, sizeof(struct batadv_bat_recv_pkt_statistics));
++	memset((void*)&bat_priv->tx_stats, 0, sizeof(struct batadv_bat_tx_statistics));
+ 
+ 	ret = netdev_master_upper_dev_link(hard_iface->net_dev,
+ 					   soft_iface, NULL, NULL);
+Index: batman-adv-2016.5/net/batman-adv/routing.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/routing.c
++++ batman-adv-2016.5/net/batman-adv/routing.c
+@@ -376,6 +376,8 @@ int batadv_recv_icmp_packet(struct sk_bu
+ 	if (!batadv_is_my_mac(bat_priv, ethhdr->h_dest))
+ 		goto free_skb;
+ 
++	bat_priv->recv_pkt_stats.icmp_num++;
++
+ 	icmph = (struct batadv_icmp_header *)skb->data;
+ 
+ 	/* add record route information if not full */
+@@ -971,6 +973,8 @@ int batadv_recv_unicast_packet(struct sk
+ 	if (!batadv_check_unicast_ttvn(bat_priv, skb, hdr_size))
+ 		goto free_skb;
+ 
++	bat_priv->recv_pkt_stats.unicast_num++;
++
+ 	/* packet for me */
+ 	if (batadv_is_my_mac(bat_priv, unicast_packet->dest)) {
+ 		if (is4addr) {
+@@ -1046,6 +1050,8 @@ int batadv_recv_unicast_tvlv(struct sk_b
+ 	if (skb_linearize(skb) < 0)
+ 		goto free_skb;
+ 
++	bat_priv->recv_pkt_stats.tvlv_num++;
++
+ 	unicast_tvlv_packet = (struct batadv_unicast_tvlv_packet *)skb->data;
+ 
+ 	tvlv_buff = (unsigned char *)(skb->data + hdr_size);
+@@ -1100,6 +1106,7 @@ int batadv_recv_frag_packet(struct sk_bu
+ 		goto free_skb;
+ 
+ 	skb->priority = frag_packet->priority + 256;
++	bat_priv->recv_pkt_stats.frag_num++;
+ 
+ 	/* Route the fragment if it is not for us and too big to be merged. */
+ 	if (!batadv_is_my_mac(bat_priv, frag_packet->dest) &&
+@@ -1176,6 +1183,8 @@ int batadv_recv_bcast_packet(struct sk_b
+ 	if (bcast_packet->ttl < 2)
+ 		goto free_skb;
+ 
++	bat_priv->recv_pkt_stats.bcast_num++;
++
+ 	orig_node = batadv_orig_hash_find(bat_priv, bcast_packet->orig);
+ 
+ 	if (!orig_node)
+@@ -1241,3 +1250,36 @@ out:
+ 		batadv_orig_node_put(orig_node);
+ 	return ret;
+ }
++
++#define seq_prf(elem, val)	seq_printf(seq, elem, pstats->val)
++#define txseq_prf(elem, val)	seq_printf(seq, elem, ptxstats->val)
++
++int batadv_recv_stats_print_text(struct seq_file *seq, void *offset)
++{
++	struct net_device *net_dev = (struct net_device *)seq->private;
++	struct batadv_priv *bat_priv = netdev_priv(net_dev);
++	struct batadv_bat_recv_pkt_statistics *pstats = &bat_priv->recv_pkt_stats;
++	struct batadv_bat_tx_statistics *ptxstats = &bat_priv->tx_stats;
++
++	seq_prf("unicast_num = %d\n", unicast_num);
++	seq_prf("bcast_num = %d\n", bcast_num);
++	seq_prf("icmp_num = %d\n", icmp_num);
++	seq_prf("tvlv_num = %d\n", tvlv_num);
++	seq_prf("frag_num = %d\n", frag_num);
++	
++	txseq_prf("hardif_tx_num 	= %d\n", hardif_tx_num);
++	txseq_prf("ieee80211q_tx_num 	= %d\n", ieee80211q_tx_num);
++	txseq_prf("bla_drop_num 	= %d\n", bla_drop_num);
++	txseq_prf("multi_tx_num 	= %d\n", multi_tx_num);
++	txseq_prf("unicast_num 		= %d\n", unicast_num);
++	/* unicast = gw_tx + batadv_unicast + batadv_4addr + tt_tx */
++	txseq_prf("gw_tx_num 			= %d\n", gw_tx_num);
++	txseq_prf("batadv_unicast_num 		= %d\n", batadv_unicast_num);
++	txseq_prf("batadv_unicast_4addr_num 	= %d\n", batadv_unicast_4addr_num);
++	txseq_prf("tt_tx_num 			= %d\n", tt_tx_num);
++
++	return 0;
++}
++
++
++
+Index: batman-adv-2016.5/net/batman-adv/routing.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/routing.h
++++ batman-adv-2016.5/net/batman-adv/routing.h
+@@ -54,5 +54,7 @@ batadv_find_router(struct batadv_priv *b
+ bool batadv_window_protected(struct batadv_priv *bat_priv, s32 seq_num_diff,
+ 			     s32 seq_old_max_diff, unsigned long *last_reset,
+ 			     bool *protection_started);
++int batadv_recv_stats_print_text(struct seq_file *seq, void *offset);
++
+ 
+ #endif /* _NET_BATMAN_ADV_ROUTING_H_ */
+Index: batman-adv-2016.5/net/batman-adv/types.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/types.h
++++ batman-adv-2016.5/net/batman-adv/types.h
+@@ -996,6 +996,28 @@ struct batadv_priv_bat_v {
+ 	struct delayed_work ogm_wq;
+ };
+ 
++
++struct batadv_bat_recv_pkt_statistics {
++	unsigned int unicast_num;
++	unsigned int bcast_num;
++	unsigned int icmp_num;
++	unsigned int tvlv_num;
++	unsigned int frag_num;
++};
++
++struct batadv_bat_tx_statistics {
++	unsigned int hardif_tx_num;
++	unsigned int ieee80211q_tx_num;
++	unsigned int bla_drop_num;
++	unsigned int multi_tx_num;
++	unsigned int unicast_num;
++	/* unicast = gw_tx + batadv_unicast + batadv_4addr + tt_tx */
++	unsigned int gw_tx_num;
++	unsigned int batadv_unicast_num;
++	unsigned int batadv_unicast_4addr_num;
++	unsigned int tt_tx_num;
++};
++
+ /**
+  * struct batadv_priv - per mesh interface data
+  * @mesh_state: current status of the mesh (inactive/active/deactivating)
+@@ -1097,6 +1119,8 @@ struct batadv_priv {
+ 	struct batadv_algo_ops *algo_ops;
+ 	struct hlist_head softif_vlan_list;
+ 	spinlock_t softif_vlan_list_lock; /* protects softif_vlan_list */
++	struct batadv_bat_recv_pkt_statistics recv_pkt_stats;
++	struct batadv_bat_tx_statistics tx_stats;
+ #ifdef CONFIG_BATMAN_ADV_BLA
+ 	struct batadv_priv_bla bla;
+ #endif
+Index: batman-adv-2016.5/net/batman-adv/send.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/send.c
++++ batman-adv-2016.5/net/batman-adv/send.c
+@@ -336,10 +336,12 @@ int batadv_send_skb_unicast(struct batad
+ 
+ 	switch (packet_type) {
+ 	case BATADV_UNICAST:
++		bat_priv->tx_stats.batadv_unicast_num++;
+ 		if (!batadv_send_skb_prepare_unicast(skb, orig_node))
+ 			goto out;
+ 		break;
+ 	case BATADV_UNICAST_4ADDR:
++		bat_priv->tx_stats.batadv_unicast_4addr_num++;
+ 		if (!batadv_send_skb_prepare_unicast_4addr(bat_priv, skb,
+ 							   orig_node,
+ 							   packet_subtype))
+@@ -403,6 +405,8 @@ int batadv_send_skb_via_tt_generic(struc
+ 	u8 *src, *dst;
+ 	int ret;
+ 
++	bat_priv->tx_stats.tt_tx_num++;
++
+ 	src = ethhdr->h_source;
+ 	dst = ethhdr->h_dest;
+ 
+@@ -438,6 +442,8 @@ int batadv_send_skb_via_gw(struct batadv
+ {
+ 	struct batadv_orig_node *orig_node;
+ 	int ret;
++	
++	bat_priv->tx_stats.gw_tx_num++;
+ 
+ 	orig_node = batadv_gw_get_selected_orig(bat_priv);
+ 	ret = batadv_send_skb_unicast(bat_priv, skb, BATADV_UNICAST_4ADDR,
+Index: batman-adv-2016.5/net/batman-adv/soft-interface.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/soft-interface.c
++++ batman-adv-2016.5/net/batman-adv/soft-interface.c
+@@ -230,6 +230,7 @@ static int batadv_interface_tx(struct sk
+ 	if (atomic_read(&bat_priv->mesh_state) != BATADV_MESH_ACTIVE)
+ 		goto dropped;
+ 
++	bat_priv->tx_stats.hardif_tx_num++;
+ 	netif_trans_update(soft_iface);
+ 	vid = batadv_get_vid(skb, 0);
+ 	ethhdr = eth_hdr(skb);
+@@ -237,6 +238,7 @@ static int batadv_interface_tx(struct sk
+ 	switch (ntohs(ethhdr->h_proto)) {
+ 	case ETH_P_8021Q:
+ 		vhdr = vlan_eth_hdr(skb);
++		bat_priv->tx_stats.ieee80211q_tx_num++;
+ 
+ 		/* drop batman-in-batman packets to prevent loops */
+ 		if (vhdr->h_vlan_encapsulated_proto != htons(ETH_P_BATMAN)) {
+@@ -252,7 +254,10 @@ static int batadv_interface_tx(struct sk
+ 	skb_set_network_header(skb, network_offset);
+ 
+ 	if (batadv_bla_tx(bat_priv, skb, vid))
++	{
++		bat_priv->tx_stats.bla_drop_num++;
+ 		goto dropped;
++	}
+ 
+ 	/* skb->data might have been reallocated by batadv_bla_tx() */
+ 	ethhdr = eth_hdr(skb);
+@@ -280,6 +285,7 @@ static int batadv_interface_tx(struct sk
+ 
+ 	gw_mode = atomic_read(&bat_priv->gw.mode);
+ 	if (is_multicast_ether_addr(ethhdr->h_dest)) {
++		bat_priv->tx_stats.multi_tx_num++;
+ 		/* if gw mode is off, broadcast every packet */
+ 		if (gw_mode == BATADV_GW_MODE_OFF) {
+ 			do_bcast = true;
+@@ -366,6 +372,7 @@ send:
+ 
+ 	/* unicast packet */
+ 	} else {
++		bat_priv->tx_stats.unicast_num++;
+ 		/* DHCP packets going to a server will use the GW feature */
+ 		if (dhcp_rcp == BATADV_DHCP_TO_SERVER) {
+ 			ret = batadv_gw_out_of_range(bat_priv, skb);

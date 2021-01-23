@@ -1,0 +1,39 @@
+--- a/arch/mips/ath79/mach-db120.c
++++ b/arch/mips/ath79/mach-db120.c
+@@ -38,8 +38,6 @@
+ #include "dev-wmac.h"
+ #include "machtypes.h"
+ 
+-#define DB120_GPIO_LED_USB		11
+-#define DB120_GPIO_LED_WLAN_5G		12
+ #define DB120_GPIO_LED_WLAN_2G		13
+ #define DB120_GPIO_LED_STATUS		14
+ #define DB120_GPIO_LED_WPS		15
+@@ -66,19 +64,9 @@ static struct gpio_led db120_leds_gpio[]
+ 		.active_low	= 1,
+ 	},
+ 	{
+-		.name		= "db120:green:wlan-5g",
+-		.gpio		= DB120_GPIO_LED_WLAN_5G,
+-		.active_low	= 1,
+-	},
+-	{
+ 		.name		= "db120:green:wlan-2g",
+ 		.gpio		= DB120_GPIO_LED_WLAN_2G,
+ 		.active_low	= 1,
+-	},
+-	{
+-		.name		= "db120:green:usb",
+-		.gpio		= DB120_GPIO_LED_USB,
+-		.active_low	= 1,
+ 	}
+ };
+ 
+@@ -97,7 +85,6 @@ static void __init db120_setup(void)
+ {
+ 	u8 *art = (u8 *) KSEG1ADDR(0x1fff0000);
+ 
+-	ath79_gpio_output_select(DB120_GPIO_LED_USB, AR934X_GPIO_OUT_GPIO);
+ 	ath79_register_m25p80(NULL);
+ 
+ 	ath79_register_leds_gpio(-1, ARRAY_SIZE(db120_leds_gpio),

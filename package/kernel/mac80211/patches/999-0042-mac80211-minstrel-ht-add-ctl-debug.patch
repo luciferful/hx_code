@@ -1,0 +1,121 @@
+--- a/net/mac80211/rc80211_minstrel_ht.h
++++ b/net/mac80211/rc80211_minstrel_ht.h
+@@ -113,6 +113,7 @@ struct minstrel_ht_sta_priv {
+ #ifdef CPTCFG_MAC80211_DEBUGFS
+ 	struct dentry *dbg_stats;
+ 	struct dentry *dbg_stats_csv;
++	struct dentry *dbg_gp_ctl;
+ #endif
+ 	void *ratelist;
+ 	void *sample_table;
+--- a/net/mac80211/rc80211_minstrel_ht_debugfs.c
++++ b/net/mac80211/rc80211_minstrel_ht_debugfs.c
+@@ -300,6 +300,100 @@ static const struct file_operations mins
+ 	.llseek = no_llseek,
+ };
+ 
++static ssize_t minstrel_ht_gp_ctl_fops_read(struct file *file,  char __user *userbuf, size_t count, loff_t *ppos)
++{
++	struct minstrel_ht_sta_priv *msp = file->private_data;
++	struct minstrel_ht_sta *mi = &msp->ht;
++	const struct mcs_group *mg = &minstrel_mcs_groups[0];
++	char *p;
++	char buf[1024];
++	int stream, gi, mask;
++	unsigned int i;
++
++	p = buf;
++	p += scnprintf(p, sizeof(buf) + buf - p, "group_id\tstream\tshort_GI\tMCS_mask\n");
++	for (i=0; i < ARRAY_SIZE(mi->groups); i++)
++	{
++		mask = mi->groups[i].supported;
++		if (mask != 0)
++		{
++			gi = mg[i].flags & IEEE80211_TX_RC_SHORT_GI;
++			stream = mg[i].streams;
++			p += scnprintf(p, sizeof(buf) + buf - p, "%d\t\t%d\t%d\t\t0x%08x\n", i, stream, gi, mask);
++		}		
++	}
++
++	return simple_read_from_buffer(userbuf, count, ppos, buf, p - buf);
++}
++
++static ssize_t minstrel_ht_gp_ctl_fops_write(struct file *file, const char __user *userbuf, size_t count, loff_t *ppos)
++{
++	char _buf[18] = {}, *buf = _buf;
++	struct minstrel_ht_sta_priv *msp = file->private_data;
++	struct minstrel_ht_sta *mi = &msp->ht;
++	unsigned long tid;
++	int groupidx, mcsmask;
++	int ret;
++
++	if (count > sizeof(_buf))
++		return -EINVAL;
++
++	if (copy_from_user(buf, userbuf, count))
++		return -EFAULT;
++
++	buf[sizeof(_buf) - 1] = '\0';
++
++	if (strncmp(buf, "default", 7) == 0) 
++	{
++		mi->groups[0].supported = 0xff;
++		mi->groups[1].supported = 0xff;
++		mi->groups[3].supported = 0xff;
++		mi->groups[4].supported = 0xff;
++	}
++	else if (strncmp(buf, "fix ", 4) == 0)
++	{
++		buf += 4;
++		ret = kstrtoul(buf, 0, &tid);
++		if (ret)
++			return ret;
++		groupidx = tid >> 16;
++		mcsmask = tid & 0xFF;
++
++		if (groupidx < ARRAY_SIZE(mi->groups))
++		{
++			
++			mi->groups[0].supported = 0;
++			mi->groups[1].supported = 0;
++			mi->groups[3].supported = 0;
++			mi->groups[4].supported = 0;
++			mi->groups[groupidx].supported = mcsmask;
++		}		
++	}
++	else
++	{
++
++		ret = kstrtoul(buf, 0, &tid);
++		if (ret)
++			return ret;
++
++		groupidx = tid >> 16;
++		mcsmask = tid & 0xFF;
++
++		if (groupidx < ARRAY_SIZE(mi->groups))
++			mi->groups[groupidx].supported = mcsmask;
++	}
++	
++	return count;
++}
++
++
++static const struct file_operations minstrel_ht_gp_ctl_fops = {
++	.read = minstrel_ht_gp_ctl_fops_read,
++	.write = minstrel_ht_gp_ctl_fops_write,
++	.open = simple_open,	
++	.llseek = generic_file_llseek,
++};
++
+ void
+ minstrel_ht_add_sta_debugfs(void *priv, void *priv_sta, struct dentry *dir)
+ {
+@@ -309,6 +403,7 @@ minstrel_ht_add_sta_debugfs(void *priv,
+ 			&minstrel_ht_stat_fops);
+ 	msp->dbg_stats_csv = debugfs_create_file("rc_stats_csv", S_IRUGO,
+ 			     dir, msp, &minstrel_ht_stat_csv_fops);
++	msp->dbg_gp_ctl = debugfs_create_file("rc_gt_ctl", S_IRUGO, dir, msp, &minstrel_ht_gp_ctl_fops);
+ }
+ 
+ void

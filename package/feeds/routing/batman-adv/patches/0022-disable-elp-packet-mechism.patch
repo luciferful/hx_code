@@ -1,0 +1,404 @@
+Index: batman-adv-2016.5/net/batman-adv/bat_v_elp.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/bat_v_elp.c
++++ batman-adv-2016.5/net/batman-adv/bat_v_elp.c
+@@ -233,6 +233,75 @@ batadv_v_elp_wifi_neigh_probe(struct bat
+ 	return true;
+ }
+ 
++void batadv_v_new_elp_pkt_send(struct batadv_priv *bat_priv, struct batadv_hard_iface *hard_iface,
++					struct batadv_elp_packet *elp_packet)
++{
++	struct batadv_elp_packet *bat_v_elp_packet;
++	struct batadv_hardif_neigh_node *hardif_neigh;
++	u32 elp_interval;
++	struct sk_buff *skb;
++
++	skb = hard_iface->bat_v.elp_skb;
++	bat_v_elp_packet = (struct batadv_elp_packet *)skb->data;
++	memcpy((void*)elp_packet, (void*)bat_v_elp_packet, sizeof(struct batadv_elp_packet));
++	
++
++	//elp_packet->packet_type = BATADV_ELP;
++	//elp_packet->version = BATADV_COMPAT_VERSION;
++	elp_packet->seqno = htonl(atomic_read(&hard_iface->bat_v.elp_seqno));
++	elp_interval = atomic_read(&hard_iface->bat_v.elp_interval);
++	elp_packet->elp_interval = htonl(elp_interval);
++
++	{
++		struct batadv_hardif_neigh_node *hardif_neigh;
++		elp_packet->neigh_node_num = 0;
++		rcu_read_lock();
++		hlist_for_each_entry_rcu(hardif_neigh, &hard_iface->neigh_list, list) {
++			ether_addr_copy(elp_packet->neigh_node[elp_packet->neigh_node_num].addr, hardif_neigh->addr);
++			elp_packet->neigh_node_num++;
++		}
++		rcu_read_unlock();
++	}
++	batadv_dbg(BATADV_DBG_BATMAN, bat_priv,
++		   "Sending NEW broadcast ELP packet on interface %s, seqno %u\n",
++		   hard_iface->net_dev->name,
++		   atomic_read(&hard_iface->bat_v.elp_seqno));
++
++	atomic_inc(&hard_iface->bat_v.elp_seqno);
++	/* The throughput metric is updated on each sent packet. This way, if a
++	 * node is dead and no longer sends packets, batman-adv is still able to
++	 * react timely to its death.
++	 *
++	 * The throughput metric is updated by following these steps:
++	 * 1) if the hard_iface is wifi => send a number of unicast ELPs for
++	 *    probing/sampling to each neighbor
++	 * 2) update the throughput metric value of each neighbor (note that the
++	 *    value retrieved in this step might be 100ms old because the
++	 *    probing packets at point 1) could still be in the HW queue)
++	 */
++	rcu_read_lock();
++	hlist_for_each_entry_rcu(hardif_neigh, &hard_iface->neigh_list, list) {
++#if 0
++		if (!batadv_v_elp_wifi_neigh_probe(hardif_neigh))
++			/* if something goes wrong while probing, better to stop
++			 * sending packets immediately and reschedule the task
++			 */
++			break;
++#endif
++		if (!kref_get_unless_zero(&hardif_neigh->refcount))
++			continue;
++
++		/* Reading the estimated throughput from cfg80211 is a task that
++		 * may sleep and that is not allowed in an rcu protected
++		 * context. Therefore schedule a task for that.
++		 */
++		queue_work(batadv_event_workqueue, &hardif_neigh->bat_v.metric_work);
++	}
++	rcu_read_unlock();
++
++	return;
++}
++
+ /**
+  * batadv_v_elp_periodic_work - ELP periodic task per interface
+  * @work: work queue item
+@@ -253,6 +322,13 @@ static void batadv_v_elp_periodic_work(s
+ 	hard_iface = container_of(bat_v, struct batadv_hard_iface, bat_v);
+ 	bat_priv = netdev_priv(hard_iface->soft_iface);
+ 
++	{
++		u32 elp_disable;
++		elp_disable = atomic_read(&bat_priv->elp_disable);
++		if (1 == elp_disable)
++			return;
++	}
++
+ 	if (atomic_read(&bat_priv->mesh_state) == BATADV_MESH_DEACTIVATING)
+ 		goto out;
+ 
+@@ -312,7 +388,6 @@ static void batadv_v_elp_periodic_work(s
+ 			 * sending packets immediately and reschedule the task
+ 			 */
+ 			break;
+-
+ 		if (!kref_get_unless_zero(&hardif_neigh->refcount))
+ 			continue;
+ 
+@@ -504,6 +579,45 @@ orig_free:
+ 		batadv_orig_node_put(orig_neigh);
+ }
+ 
++int batadv_v_new_elp_pkt_recv(u8 * ethhdr_addr, struct batadv_elp_packet *elp_packet,
++		  			 	struct batadv_hard_iface *if_incoming)
++{
++	struct batadv_priv *bat_priv = netdev_priv(if_incoming->soft_iface);
++	struct batadv_hard_iface *primary_if;
++	int ret = NET_RX_DROP;
++
++	if (batadv_is_my_mac(bat_priv, ethhdr_addr))
++	{
++		batadv_dbg(BATADV_DBG_ALL, bat_priv, "%s: ERROR!!! \n\tGet my mac's elp\n", __func__);
++		return ret;
++	}
++
++	/* did we receive a B.A.T.M.A.N. V ELP packet on an interface
++	* that does not have B.A.T.M.A.N. V ELP enabled ?
++	*/
++	if (strcmp(bat_priv->algo_ops->name, "BATMAN_V") != 0)
++	{
++		batadv_dbg(BATADV_DBG_ALL, bat_priv, "%s: ERROR!!! \n\talgo is not BATMAN_V\n", __func__);
++		return ret;
++	}
++
++	batadv_dbg(BATADV_DBG_BATMAN, bat_priv,
++		 "Received NEW ELP packet from %pM seqno %u ORIG: %pM\n",
++		 ethhdr_addr, ntohl(elp_packet->seqno),
++		 elp_packet->orig);
++
++	primary_if = batadv_primary_if_get_selected(bat_priv);
++	if (!primary_if)
++		return ret;
++
++	batadv_v_elp_neigh_update(bat_priv, ethhdr_addr, if_incoming, elp_packet);
++
++	ret = NET_RX_SUCCESS;
++	batadv_hardif_put(primary_if);
++
++	return ret;
++}
++
+ /**
+  * batadv_v_elp_packet_recv - main ELP packet handler
+  * @skb: the received packet
+@@ -522,6 +636,17 @@ int batadv_v_elp_packet_recv(struct sk_b
+ 	bool res;
+ 	int ret = NET_RX_DROP;
+ 
++	{
++		u32 elp_disable;
++		elp_disable = atomic_read(&bat_priv->elp_disable);
++		if (1 == elp_disable)
++		{
++			batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: Elp status diff, receive elp pkt while elp is disbled!\n",
++					__func__);	
++			goto free_skb;
++		}
++	}
++
+ 	res = batadv_check_management_packet(skb, if_incoming, BATADV_ELP_HLEN);
+ 	if (!res)
+ 		goto free_skb;
+Index: batman-adv-2016.5/net/batman-adv/bat_v_elp.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/bat_v_elp.h
++++ batman-adv-2016.5/net/batman-adv/bat_v_elp.h
+@@ -31,5 +31,9 @@ void batadv_v_elp_primary_iface_set(stru
+ int batadv_v_elp_packet_recv(struct sk_buff *skb,
+ 			     struct batadv_hard_iface *if_incoming);
+ void batadv_v_elp_throughput_metric_update(struct work_struct *work);
++void batadv_v_new_elp_pkt_send(struct batadv_priv *bat_priv,struct batadv_hard_iface *hard_iface,
++						struct batadv_elp_packet *elp_packet);
++int batadv_v_new_elp_pkt_recv(u8 * ethhdr_addr,	struct batadv_elp_packet *elp_packet,
++		  			 	struct batadv_hard_iface *if_incoming);
+ 
+ #endif /* _NET_BATMAN_ADV_BAT_V_ELP_H_ */
+Index: batman-adv-2016.5/net/batman-adv/bat_v_ogm.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/bat_v_ogm.c
++++ batman-adv-2016.5/net/batman-adv/bat_v_ogm.c
+@@ -49,6 +49,7 @@
+ #include "send.h"
+ #include "translation-table.h"
+ #include "tvlv.h"
++#include "bat_v_elp.h"
+ 
+ /**
+  * batadv_v_ogm_orig_get - retrieve and possibly create an originator node
+@@ -184,6 +185,13 @@ static void batadv_v_ogm_send(struct wor
+ 			continue;
+ 
+ 		ret = batadv_hardif_no_broadcast(hard_iface, NULL, NULL);
++		{
++			/* if elp is disable, we always need ogm without neigh  */
++			u32 elp_disable;
++			elp_disable = atomic_read(&bat_priv->elp_disable);
++			if (1 == elp_disable)
++				ret = BATADV_HARDIF_BCAST_OK;
++		}
+ 		if (ret) {
+ 			char *type;
+ 
+@@ -214,6 +222,20 @@ static void batadv_v_ogm_send(struct wor
+ 			   ntohl(ogm_packet->throughput), ogm_packet->ttl,
+ 			   hard_iface->net_dev->name,
+ 			   hard_iface->net_dev->dev_addr);
++		{
++			u32 elp_disable;
++			elp_disable = atomic_read(&bat_priv->elp_disable);
++			if (1 == elp_disable)
++				batadv_v_new_elp_pkt_send(bat_priv, hard_iface, &ogm_packet->elp_packet);
++			else
++			{
++				/* send all 0 to others, for some especiall cast the A is disable elp, and B isn't disable elp */
++				memset((void*)&ogm_packet->elp_packet, 0, sizeof(struct batadv_elp_packet));
++				/* pkt_type and version = 0xff means no elp content */
++				ogm_packet->elp_packet.packet_type = 0xff;
++				ogm_packet->elp_packet.version = 0xff;
++			}
++		}	
+ 
+ 		/* this skb gets consumed by batadv_v_ogm_send_to_if() */
+ 		skb_tmp = skb_clone(skb, GFP_ATOMIC);
+@@ -665,7 +687,7 @@ static bool batadv_v_ogm_aggr_packet(int
+ 	next_buff_pos += ntohs(tvlv_len);
+ 
+ 	return (next_buff_pos <= packet_len) &&
+-	       (next_buff_pos <= BATADV_MAX_AGGREGATION_BYTES);
++	       (next_buff_pos <= (BATADV_MAX_AGGREGATION_BYTES+sizeof(struct batadv_elp_packet)));
+ }
+ 
+ /**
+@@ -831,13 +853,43 @@ int batadv_v_ogm_packet_recv(struct sk_b
+ 	if (batadv_is_my_mac(bat_priv, ogm_packet->orig))
+ 		goto free_skb;
+ 
++ 	ogm_packet = (struct batadv_ogm2_packet *)skb->data;
++
++        {
++                u32 elp_disable;
++                elp_disable = atomic_read(&bat_priv->elp_disable);
++                if (1 == elp_disable)
++		{
++			/* condition 1: both are elp_disable mode */
++			if ((ogm_packet->elp_packet.packet_type == BATADV_ELP) && 
++					(ogm_packet->elp_packet.version == BATADV_COMPAT_VERSION))
++                        	(void)batadv_v_new_elp_pkt_recv(ogm_packet->orig, &ogm_packet->elp_packet, if_incoming);
++			else
++			{
++			/* condition 2: ogm sender is elp enalbe, receiver is elp disable */
++				batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: Elp status diff Error, ogm %pM is elp_enable\n",
++					       	__func__, ogm_packet->orig);	
++				goto free_skb;
++			}	
++		} 
++		else
++		{
++			/* contidion 3: ogm sender is elp_disable, receiver is elp enable */
++			if ((ogm_packet->elp_packet.packet_type == BATADV_ELP) && (ogm_packet->elp_packet.version == BATADV_COMPAT_VERSION))
++			{
++				batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: Elp status diff Error, ogm %pM is elp_disable\n",
++						 __func__, ogm_packet->orig);
++				goto free_skb;
++			}
++		}
++        }
++	
++
+ 	batadv_inc_counter(bat_priv, BATADV_CNT_MGMT_RX);
+ 	batadv_add_counter(bat_priv, BATADV_CNT_MGMT_RX_BYTES,
+ 			   skb->len + ETH_HLEN);
+ 
+ 	ogm_offset = 0;
+-	ogm_packet = (struct batadv_ogm2_packet *)skb->data;
+-
+ 	while (batadv_v_ogm_aggr_packet(ogm_offset, skb_headlen(skb),
+ 					ogm_packet->tvlv_len)) {
+ 		batadv_v_ogm_process(skb, ogm_offset, if_incoming);
+Index: batman-adv-2016.5/net/batman-adv/soft-interface.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/soft-interface.c
++++ batman-adv-2016.5/net/batman-adv/soft-interface.c
+@@ -845,6 +845,7 @@ static int batadv_softif_init_late(struc
+ 
+ 	/* customize control position */
+ 	atomic_set(&bat_priv->ogm_forward_judge, 0);
++	atomic_set(&bat_priv->elp_disable, 0);
+ 
+ 	bat_priv->tt.last_changeset = NULL;
+ 	bat_priv->tt.last_changeset_len = 0;
+Index: batman-adv-2016.5/net/batman-adv/sysfs.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/sysfs.c
++++ batman-adv-2016.5/net/batman-adv/sysfs.c
+@@ -696,6 +696,7 @@ BATADV_ATTR_SIF_BOOL(network_coding, 064
+ static BATADV_ATTR(isolation_mark, 0644, batadv_show_isolation_mark,
+ 		   batadv_store_isolation_mark);
+ BATADV_ATTR_SIF_UINT(ogm_forward_judge, ogm_forward_judge, 0644, 0, 1, NULL);
++BATADV_ATTR_SIF_UINT(elp_disable, elp_disable, 0644, 0, 1, NULL);
+ 
+ static struct batadv_attribute *batadv_mesh_attrs[] = {
+ 	&batadv_attr_aggregated_ogms,
+@@ -724,6 +725,7 @@ static struct batadv_attribute *batadv_m
+ #endif
+ 	&batadv_attr_isolation_mark,
+ 	&batadv_attr_ogm_forward_judge,
++	&batadv_attr_elp_disable,
+ 	NULL,
+ };
+ 
+Index: batman-adv-2016.5/net/batman-adv/types.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/types.h
++++ batman-adv-2016.5/net/batman-adv/types.h
+@@ -1099,6 +1099,7 @@ struct batadv_priv {
+ 
+ 	/* new control position start */
+ 	atomic_t ogm_forward_judge;
++	atomic_t elp_disable;
+ 	/* new control postion end */
+ 
+ 	char num_ifaces;
+Index: batman-adv-2016.5/net/batman-adv/packet.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/packet.h
++++ batman-adv-2016.5/net/batman-adv/packet.h
+@@ -207,6 +207,32 @@ struct batadv_ogm_packet {
+ 
+ #define BATADV_OGM_HLEN sizeof(struct batadv_ogm_packet)
+ 
++struct batadv_orig_neigh_node_info {
++        u8      addr[ETH_ALEN];
++        u8      link_metric;
++};
++
++/**
++ * struct batadv_elp_packet - elp (neighbor discovery) packet
++ * @packet_type: batman-adv packet type, part of the general header
++ * @version: batman-adv protocol version, part of the genereal header
++ * @orig: originator mac address
++ * @seqno: sequence number
++ * @elp_interval: currently used ELP sending interval in ms
++ */
++struct batadv_elp_packet {
++        u8     packet_type;
++        u8     version;
++        u8     orig[ETH_ALEN];
++        __be32 seqno;
++        __be32 elp_interval;
++        u8     neigh_node_num;
++        struct batadv_orig_neigh_node_info neigh_node[MAX_NODES_NUM-1];
++};
++
++#define BATADV_ELP_HLEN sizeof(struct batadv_elp_packet)
++
++
+ /**
+  * struct batadv_ogm2_packet - ogm2 (routing protocol) packet
+  * @packet_type: batman-adv packet type, part of the general header
+@@ -225,6 +251,7 @@ struct batadv_ogm2_packet {
+ 	u8     flags;
+ 	__be32 seqno;
+ 	u8     orig[ETH_ALEN];
++	struct batadv_elp_packet elp_packet;
+ 	__be16 tvlv_len;
+ 	__be32 throughput;
+ 	/* __packed is not needed as the struct size is divisible by 4,
+@@ -234,32 +261,6 @@ struct batadv_ogm2_packet {
+ 
+ #define BATADV_OGM2_HLEN sizeof(struct batadv_ogm2_packet)
+ 
+-struct batadv_orig_neigh_node_info {
+-	u8	addr[ETH_ALEN];
+-	u8	link_metric;
+-};
+-
+-
+-/**
+- * struct batadv_elp_packet - elp (neighbor discovery) packet
+- * @packet_type: batman-adv packet type, part of the general header
+- * @version: batman-adv protocol version, part of the genereal header
+- * @orig: originator mac address
+- * @seqno: sequence number
+- * @elp_interval: currently used ELP sending interval in ms
+- */
+-struct batadv_elp_packet {
+-	u8     packet_type;
+-	u8     version;
+-	u8     orig[ETH_ALEN];
+-	__be32 seqno;
+-	__be32 elp_interval;
+-	u8     neigh_node_num;
+-	struct batadv_orig_neigh_node_info neigh_node[MAX_NODES_NUM-1];
+-};
+-
+-#define BATADV_ELP_HLEN sizeof(struct batadv_elp_packet)
+-
+ /**
+  * struct batadv_icmp_header - common members among all the ICMP packets
+  * @packet_type: batman-adv packet type, part of the general header

@@ -1,0 +1,8 @@
+#!/bin/sh /etc/rc.common
+# /init.d/scmd
+START=97
+
+start() {
+	exit 0
+	/sbin/scmd -d /dev/ttyATH0 -s 115200 &
+}

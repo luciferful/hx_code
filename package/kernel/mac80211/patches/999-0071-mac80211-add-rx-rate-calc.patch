@@ -1,0 +1,231 @@
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -18,6 +18,7 @@
+ #include <linux/if_arp.h>
+ #include <linux/timer.h>
+ #include <linux/rtnetlink.h>
++#include <asm-generic/div64.h>
+ 
+ #include <net/mac80211.h>
+ #include "ieee80211_i.h"
+@@ -82,6 +83,110 @@ static int sta_info_hash_del(struct ieee
+ 				      sta_rht_params);
+ }
+ 
++#define IEEE80211_STATS_WORK_PERIOD    3000    /* 3-second */
++static unsigned int sta_tp_calc(unsigned int old, unsigned int new, unsigned int time)
++{
++	unsigned int tmp, tp;
++
++	if (old > new)
++        {
++                tmp = 0xffffffff - old + 1;
++                tmp = new + tmp;
++        }
++        else
++                tmp = new - old;
++
++	/* the unit of tp is kbit per sec */
++	tp = (tmp*8)/time;
++	return tp;
++}
++
++static unsigned int sta_get_u64_delat(u64 new, u64 old)
++{
++	unsigned int a, b, c;
++	a = (unsigned int)new;
++	b = (unsigned int)old;
++	
++	if (a < b)
++	{
++		c = 0xFFFFFFFF - b;
++		c = a+c+1;
++	}
++	else
++		c = a-b;
++	return c;
++}
++
++static void sta_stats_work(struct work_struct *work)
++{
++	struct sta_info *sta;
++	struct ieee80211_local *local;
++	unsigned int ac;
++	u32 tp=0;
++	u64 tmp = 0;
++
++	sta = container_of(work, struct sta_info, stats_work.work);
++	local = sta->local;
++	
++	/* rx throughput calc */ 	
++	tp = sta_tp_calc((unsigned int)sta->old_rx_bytes, (unsigned int)sta->rx_bytes, (IEEE80211_STATS_WORK_PERIOD));
++	sta->old_rx_bytes = sta->rx_bytes;
++	sta->tp_val = tp;
++	ewma_add(&sta->tp_avg, tp);
++	
++	/* tx throughput calc, including tx failed */
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++)
++		tmp += sta->tx_bytes[ac];
++	tp = sta_tp_calc((unsigned int)sta->old_tx_bytes, (unsigned int)tmp, (IEEE80211_STATS_WORK_PERIOD));
++	sta->old_tx_bytes = tmp;
++	sta->tx_tp_val = tp;
++	ewma_add(&sta->tx_tp_avg, tp);
++	
++	/* tx success rate update */
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++)
++                tmp += sta->tx_packets[ac];
++	{
++		unsigned int send_pkts, faild_pkts, retry_pkts;
++		send_pkts = sta_get_u64_delat(tmp, sta->old_tx_packets);
++		faild_pkts = sta_get_u64_delat(sta->tx_retry_failed, sta->old_tx_retry_failed);
++		retry_pkts = sta_get_u64_delat(sta->tx_retry_count, sta->old_tx_retry_count);
++
++		sta->old_tx_retry_count = sta->tx_retry_count;
++		sta->old_tx_retry_failed = sta->tx_retry_failed;
++		sta->old_tx_packets = tmp;
++
++		sta->tx_success_ratio = ((send_pkts - faild_pkts)*100)/send_pkts;
++		sta->tx_retry_ratio = ((retry_pkts)*100)/send_pkts;
++	}
++
++	{
++                int i;
++                unsigned long tmp0, tmp1, tmp2;
++		unsigned int msdu_send, msdu_faild, msdu_retry;	
++                tmp0 = 0; tmp1 = 0; tmp2 = 0;
++                for(i = 0; i < (IEEE80211_NUM_TIDS + 1); i++)
++                {
++                        tmp0 += sta->tx_msdu[i];
++                        tmp2 += sta->tx_msdu_retries[i];
++                        tmp1 += sta->tx_msdu_failed[i];
++                }
++		msdu_send = sta_get_u64_delat(tmp0, sta->old_tx_msdu);
++		msdu_faild = sta_get_u64_delat(tmp1, sta->old_tx_msdu_failed);
++		msdu_retry = sta_get_u64_delat(tmp2, sta->old_tx_msdu_retries);
++	
++		sta->old_tx_msdu = tmp0;
++		sta->old_tx_msdu_failed = tmp1;
++		sta->old_tx_msdu_retries = tmp2;
++		
++		sta->msdu_success_ratio = ((msdu_send - msdu_faild)*100)/msdu_send;
++		sta->msdu_retry_ratio = ((msdu_retry)*100)/msdu_send;
++        }
++
++	printk(KERN_DEBUG "sta %pM rx tp = %dkbps, tx tp = %dkbps\n", sta->addr, sta->tp_val, sta->tx_tp_val);
++	ieee80211_queue_delayed_work(&local->hw, &sta->stats_work, msecs_to_jiffies(IEEE80211_STATS_WORK_PERIOD));
++	return;
++}
++
+ static void __cleanup_single_sta(struct sta_info *sta)
+ {
+ 	int ac, i;
+@@ -245,6 +350,7 @@ void sta_info_free(struct ieee80211_loca
+ 		rate_control_free_sta(sta);
+ 
+ 	sta_dbg(sta->sdata, "Destroyed STA %pM\n", sta->sta.addr);
++	cancel_delayed_work_sync(&sta->stats_work);
+ 
+ 	if (sta->sta.txq[0])
+ 		kfree(to_txq_info(sta->sta.txq[0]));
+@@ -312,8 +418,13 @@ struct sta_info *sta_info_alloc(struct i
+ 
+ 	spin_lock_init(&sta->lock);
+ 	spin_lock_init(&sta->ps_lock);
++	printk(KERN_DEBUG "alloc sta(addr=0x%08x), mac = %pM\n", (unsigned int)&sta->list, addr);
+ 	INIT_WORK(&sta->drv_deliver_wk, sta_deliver_ps_frames);
+ 	INIT_WORK(&sta->ampdu_mlme.work, ieee80211_ba_session_work);
++	INIT_DELAYED_WORK(&sta->stats_work, sta_stats_work);
++	schedule_delayed_work(&sta->stats_work, HZ/2);
++	sta->old_rx_bytes = 0;
++	sta->old_tx_bytes = 0;
+ 	mutex_init(&sta->ampdu_mlme.mtx);
+ #ifdef CPTCFG_MAC80211_MESH
+ 	if (ieee80211_vif_is_mesh(&sdata->vif)) {
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -468,6 +468,14 @@ struct sta_info {
+ 	int chain_rssi[3];
+ 	int last_ack_signal;
+ 
++	u64 old_rx_bytes;
++	u32 tp_val;
++	struct ewma tp_avg;
++	u64 old_tx_bytes;
++	u32 tx_tp_val;
++	struct ewma tx_tp_avg;
++	struct delayed_work stats_work;
++
+ 	u8 chains;
+ 	s8 chain_signal_last[IEEE80211_MAX_CHAINS];
+ 	struct ewma chain_signal_avg[IEEE80211_MAX_CHAINS];
+@@ -478,6 +486,12 @@ struct sta_info {
+ 	/* Updated from TX status path only, no locking requirements */
+ 	unsigned long tx_filtered_count;
+ 	unsigned long tx_retry_failed, tx_retry_count;
++	
++	/* add for period status calc */
++	unsigned long old_tx_retry_failed, old_tx_retry_count, old_tx_packets;
++	unsigned long old_tx_msdu, old_tx_msdu_failed, old_tx_msdu_retries;
++	unsigned int tx_success_ratio, tx_retry_ratio;
++	unsigned int msdu_success_ratio, msdu_retry_ratio;
+ 
+ 	/* Updated from TX path only, no locking requirements */
+ 	u64 tx_packets[IEEE80211_NUM_ACS];
+--- a/net/mac80211/debugfs_sta.c
++++ b/net/mac80211/debugfs_sta.c
+@@ -63,15 +63,33 @@ static ssize_t sta_info_read(struct file
+ 	char buf[800];
+ 	struct sta_info *sta = file->private_data;
+ 	char *p = &buf[0];
+-	p += scnprintf(p, sizeof(buf) + buf - p, "last signal    = %d\n", sta->last_signal);
+-	p += scnprintf(p, sizeof(buf) + buf - p, "avg signal     = %lu\n", -dbg_ewma_read(&sta->avg_signal));
+-	p += scnprintf(p, sizeof(buf) + buf - p, "rssi           = %d\n", sta->rssi);
+-	p += scnprintf(p, sizeof(buf) + buf - p, "avg rssi       = %lu\n", dbg_ewma_read(&sta->avg_rssi));
+-	p += scnprintf(p, sizeof(buf) + buf - p, "noise          = %d\n", sta->noise);
+-	p += scnprintf(p, sizeof(buf) + buf - p, "avg noise      = %lu\n", -dbg_ewma_read(&sta->avg_noise));
+-	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[0]  = %d\n", sta->chain_rssi[0]);
+-	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[1]  = %d\n", sta->chain_rssi[1]);
+-	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[2]  = %d\n", sta->chain_rssi[2]);
++	p += scnprintf(p, sizeof(buf) + buf - p, "sta %pM (0x%08x) \n", sta->addr, (u32)(&sta->list));
++	p += scnprintf(p, sizeof(buf) + buf - p, "\tlast signal(avg) = %ddBm(%lddBm)\n", sta->last_signal, -dbg_ewma_read(&sta->avg_signal));
++	p += scnprintf(p, sizeof(buf) + buf - p, "\trssi(avg)        = %ddB(%lddB)\n", sta->rssi, dbg_ewma_read(&sta->avg_rssi));
++	p += scnprintf(p, sizeof(buf) + buf - p, "\tnoise(avg)       = %ddBm(%lddBm)\n", sta->noise, -dbg_ewma_read(&sta->avg_noise));
++	p += scnprintf(p, sizeof(buf) + buf - p, "\tchain rssi[0]    = %ddB,  rssi[1] = %ddB, rssi[2] = %ddB\n", sta->chain_rssi[0], sta->chain_rssi[1], sta->chain_rssi[2]);
++	//p += scnprintf(p, sizeof(buf) + buf - p, "\trx byte         = %u\n", (unsigned int)sta->rx_bytes);
++	//p += scnprintf(p, sizeof(buf) + buf - p, "\told rx byte     = %u\n", (unsigned int)sta->old_rx_bytes);
++	p += scnprintf(p, sizeof(buf) + buf - p, "\trx tp(avg)       = %dkbps(%ldkbps)\n", sta->tp_val, dbg_ewma_read(&sta->tp_avg));
++        //p += scnprintf(p, sizeof(buf) + buf - p, "\told tx byte     = %u\n", (unsigned int)sta->old_tx_bytes);
++        p += scnprintf(p, sizeof(buf) + buf - p, "\ttx tp(avg)       = %dkbps(%ldkbps)\n", sta->tx_tp_val, dbg_ewma_read(&sta->tx_tp_avg));
++	p += scnprintf(p, sizeof(buf) + buf - p, "\ttx retry_failed  = %ld,  retry_count = %ld\n", sta->tx_retry_failed, sta->tx_retry_count);
++	
++	p += scnprintf(p, sizeof(buf) + buf - p, "\ttx success       = %d%%, retry_ratio = %d%%\n", sta->tx_success_ratio, sta->tx_retry_ratio);
++	p += scnprintf(p, sizeof(buf) + buf - p, "\tmsud success     = %d%%, retry_ratio = %d%%\n", sta->msdu_success_ratio, sta->msdu_retry_ratio);
++
++	{
++		int i;
++		unsigned long tmp0, tmp1, tmp2;
++		tmp0 = 0; tmp1 = 0; tmp2 = 0;
++		for(i = 0; i < (IEEE80211_NUM_TIDS + 1); i++)
++		{
++			tmp0 += sta->tx_msdu[i];
++			tmp1 += sta->tx_msdu_retries[i];
++			tmp2 += sta->tx_msdu_failed[i];
++		}
++		p += scnprintf(p, sizeof(buf) + buf - p, "\ttx msdu stat num-failed-count = %ld-%ld-%ld\n", tmp0, tmp1, tmp2);
++	}
+ 	return simple_read_from_buffer(userbuf, count, ppos, buf, p-buf);
+ }
+ STA_OPS(info);
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -1426,6 +1426,10 @@ ieee80211_rx_h_sta_process(struct ieee80
+ 
+ 	sta->rx_fragments++;
+ 	sta->rx_bytes += rx->skb->len;
++	/*
++	printk(KERN_DEBUG "%s: sta %pM (0x%08x) rx_bytes = %u\n", __func__,
++			sta->addr, (u32)(&sta->list), (unsigned int)sta->rx_bytes);
++	*/
+ 	if (!(status->flag & RX_FLAG_NO_SIGNAL_VAL)) {
+ 		sta->last_signal = status->signal;
+ 		ewma_add(&sta->avg_signal, -status->signal);

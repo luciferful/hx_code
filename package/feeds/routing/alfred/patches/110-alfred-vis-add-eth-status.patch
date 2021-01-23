@@ -1,0 +1,111 @@
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -199,6 +199,47 @@ static int get_if_noise(char *ifname, in
+ 
+ }
+ 
++static int get_eth_status(char *ethname, struct eth_status *peth)
++{
++	FILE *file = NULL;
++	char buf[64];
++	int ret;
++	long len;
++
++	if (memcmp(ethname, "eth0", strlen("eth0")))
++		file = fopen("/sys/kernel/debug/ag71xx/ag71xx.0/eth_status", "rb");
++	else if (memcmp(ethname, "eth1", strlen("eth1")))
++		file = fopen("/sys/kernel/debug/ag71xx/ag71xx.1/eth_status", "rb");
++	else
++		goto error_step;
++
++	if (file == NULL)
++		goto error_step;
++
++	fseek(file,0L,SEEK_END);
++	len=ftell(file); /* 得到文件大小 */
++	if (len >= 64)
++		len = 63;
++
++	fseek(file,0L,SEEK_SET); /* 定位到文件开头 */
++
++	fread(buf, sizeof(char), len, file);
++	fclose(file);
++
++	printf("name=%s,len = %ld, %s\n", ethname, len, buf);
++
++	ret = sscanf(buf, "%d,%d,%d", &peth->link, &peth->speed, &peth->duplex);
++	if (ret != 3)
++		goto error_step;
++	return 0;
++
++error_step:
++	peth->link = 0;
++	peth->speed = 0;
++	peth->duplex = 0;
++	return 1;
++}
++
+ static void set_ipv4_to_batman_adv(uint8_t *ip)
+ {
+ 	char cmd[128];
+@@ -863,6 +904,7 @@ static int compile_vis_data(struct globa
+ 	int iface_n = 0, entries_n = 0;
+ 	uint8_t ipv4[4];
+ 	uint8_t buf[32];
++	struct eth_status eth[2];
+ 	int32_t nf;
+ 
+ 	if (0 != get_if_ipv4("br-lan", ipv4))
+@@ -875,6 +917,8 @@ static int compile_vis_data(struct globa
+ 	set_hostname_to_batman_adv();
+ 	set_ipv4_to_batman_adv(ipv4);
+ 	get_if_noise("wlan1", &nf);
++	get_eth_status("eth0", &eth[0]);
++	get_eth_status("eth1", &eth[1]);
+ 
+ 	list_for_each_entry(i_entry, &globals->iface_list, list) {
+ 		memcpy(&globals->vis_data->ifaces[iface_n].mac, i_entry->mac, ETH_ALEN);
+@@ -885,6 +929,8 @@ static int compile_vis_data(struct globa
+ 		globals->vis_data->ifaces[iface_n].gpsbd_flag = globals->gpsbd_flag;
+ 		if (globals->gpsbd_flag)
+ 			memcpy(&globals->vis_data->ifaces[iface_n].pos_info, &globals->posinfo, sizeof(globals->posinfo));
++		memcpy(&globals->vis_data->ifaces[iface_n].eth0, &eth[0], sizeof(struct eth_status));
++		memcpy(&globals->vis_data->ifaces[iface_n].eth1, &eth[1], sizeof(struct eth_status));
+ 
+ 		iface_n++;
+ 		if (iface_n == 254)
+@@ -1113,7 +1159,9 @@ static void vis_jsondoc_interfaces(uint8
+ 		printf("     \"gpsinfo\" :\"%s%c\", \"%s%c\", \"%s\" \n", ifaces[0].pos_info.latitude,
+ 				ifaces[0].pos_info.lati, ifaces[0].pos_info.longitude, ifaces[0].pos_info.longi, ifaces[0].pos_info.speed);
+ 	else
+-		printf("     \"gpsinfo\" : NULL \n");
++		printf("     \"gpsinfo\" : \"0\",\"0\",\"0\" \n");
++	printf("     \"eth0 status\" : \"link=%d\", \"speed=%d\", \"full=%d\" \n", ifaces[0].eth0.link, ifaces[0].eth0.speed, ifaces[0].eth0.duplex);
++	printf("     \"eth1 status\" : \"link=%d\", \"speed=%d\", \"full=%d\" \n", ifaces[0].eth1.link, ifaces[0].eth1.speed, ifaces[0].eth1.duplex);
+ 	if (iface_n > 1) {
+ 		printf("      \"secondary\" : [ ");
+ 		for (i = 1; i < iface_n; i++) {
+--- a/vis/vis.h
++++ b/vis/vis.h
+@@ -61,6 +61,12 @@ struct vis_gpsbd_info {
+ 	char speed[16];
+ };
+ 
++struct eth_status {
++	unsigned char link;
++	unsigned char speed;
++	unsigned char duplex;
++};
++
+ struct vis_iface {
+ 	uint8_t mac[ETH_ALEN];
+ 	uint8_t name[32];
+@@ -68,6 +74,8 @@ struct vis_iface {
+ 	int32_t noise;
+ 	uint8_t gpsbd_flag;
+ 	struct vis_gpsbd_info pos_info;
++	struct eth_status eth0;
++	struct eth_status eth1;
+ };
+ 
+ struct vis_entry {

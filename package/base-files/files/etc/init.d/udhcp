@@ -1,0 +1,47 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=99
+
+generate_config_file() {
+        touch $1
+        echo start $2 >> $1
+        echo end $3 >> $1
+        echo interface br-lan >> $1
+        echo option subnet $4 >> $1
+        echo option router $5 >> $1
+        echo option dns $5 >> $1
+        echo option domain local >> $1
+        echo option lease 100 >> $1
+        echo lease_file /tmp/udhcpd_lease >> $1
+}
+
+
+
+
+start() {
+        config_load network
+        config_get enable lan dhcp
+        if [ "$enable" = "on" ] ;then
+                config_get lanip lan ipaddr
+		config_get startip lan startaddr
+		config_get endip lan endaddr
+		config_get maskip lan maskaddr
+                if [ -f /etc/config/udhcpd.conf ] ;then
+                        rm /etc/config/udhcpd.conf
+                fi
+                generate_config_file "/etc/config/udhcpd.conf" $startip $endip $maskip $lanip
+		/usr/sbin/udhcpd -f /etc/config/udhcpd.conf > /dev/null &
+	else
+		if [ -f /etc/config/udhcpd.conf ] ;then
+			rm /etc/config/udhcpd.conf
+		fi
+        fi
+}
+
+stop() {
+	SERVICE_PID_FILE="/var/run/udhcpd.pid"
+	service_stop /usr/sbin/udhcpd
+}
+
+

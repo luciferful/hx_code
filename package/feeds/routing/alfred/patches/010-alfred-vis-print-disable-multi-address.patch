@@ -1,0 +1,141 @@
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -454,7 +454,7 @@ err:
+ static const int parse_orig_list_mandatory[] = {
+ 	BATADV_ATTR_ORIG_ADDRESS,
+ 	BATADV_ATTR_NEIGH_ADDRESS,
+-	BATADV_ATTR_TQ,
++	//BATADV_ATTR_TQ,
+ 	BATADV_ATTR_HARD_IFINDEX,
+ };
+ 
+@@ -496,11 +496,11 @@ static int parse_orig_list_netlink_cb(st
+ 
+ 	orig = nla_data(attrs[BATADV_ATTR_ORIG_ADDRESS]);
+ 	neigh = nla_data(attrs[BATADV_ATTR_NEIGH_ADDRESS]);
+-	tq = nla_get_u8(attrs[BATADV_ATTR_TQ]);
++	//tq = nla_get_u8(attrs[BATADV_ATTR_TQ]);
+ 	hardif = nla_get_u32(attrs[BATADV_ATTR_HARD_IFINDEX]);
+ 
+-	if (tq < 1)
+-		return NL_OK;
++//	if (tq < 1)
++//		return NL_OK;
+ 
+ 	if (memcmp(orig, neigh, ETH_ALEN) != 0)
+ 		return NL_OK;
+@@ -511,7 +511,7 @@ static int parse_orig_list_netlink_cb(st
+ 
+ 	memcpy(v_entry->v.mac, orig, ETH_ALEN);
+ 	v_entry->v.ifindex = get_if_index_devindex(opts->globals, hardif);
+-	v_entry->v.qual = tq;
++	//v_entry->v.qual = tq;
+ 	list_add_tail(&v_entry->list, &opts->globals->entry_list);
+ 
+ 	return NL_OK;
+@@ -787,15 +787,15 @@ static void vis_dot_entries(uint8_t entr
+ 				fprintf(stderr, "ERROR: bad ifindex ...\n");
+ 				continue;
+ 			}
+-			if (vis_entries[i].qual == 0) {
+-				fprintf(stderr, "ERROR: quality = 0?\n");
+-				continue;
+-			}
+-			printf("\t\"%s\" ",
++//			if (vis_entries[i].qual == 0) {
++//				fprintf(stderr, "ERROR: quality = 0?\n");
++//				continue;
++//			}
++			printf("\t\"%s\" \n",
+ 			       mac_to_str(ifaces[vis_entries[i].ifindex].mac));
+-			printf("-> \"%s\" [label=\"%3.3f\"]\n",
+-			       mac_to_str(vis_entries[i].mac),
+-			       255.0 / ((float)vis_entries[i].qual));
++//			printf("-> \"%s\" [label=\"%3.3f\"]\n",
++//			       mac_to_str(vis_entries[i].mac),
++//			       255.0 / ((float)vis_entries[i].qual));
+ 		}
+ 	}
+ }
+@@ -827,24 +827,26 @@ static void vis_json_entries(uint8_t ent
+ 
+ 	for (i = 0; i < entries_n; i++) {
+ 		if (vis_entries[i].ifindex == 255) {
++			if (vis_entries[i].mac[0] & 0x1)
++				continue;
+ 			printf("{ \"router\" : \"%s\"",
+ 			       mac_to_str(ifaces[0].mac));
+ 			printf(", \"gateway\" : \"%s\", \"label\" : \"TT\" }\n",
+-			       mac_to_str(vis_entries[i].mac));
++			       		mac_to_str(vis_entries[i].mac));
+ 		} else {
+ 			if (vis_entries[i].ifindex >= iface_n) {
+ 				fprintf(stderr, "ERROR: bad ifindex ...\n");
+ 				continue;
+ 			}
+-			if (vis_entries[i].qual == 0) {
+-				fprintf(stderr, "ERROR: quality = 0?\n");
+-				continue;
+-			}
+-			printf("{ \"router\" : \"%s\"",
++//			if (vis_entries[i].qual == 0) {
++//				fprintf(stderr, "ERROR: quality = 0?\n");
++//				continue;
++//			}
++			printf("{ \"router\" : \"%s\"}\n",
+ 			       mac_to_str(ifaces[vis_entries[i].ifindex].mac));
+-			printf(", \"neighbor\" : \"%s\", \"label\" : \"%3.3f\" }\n",
+-			       mac_to_str(vis_entries[i].mac),
+-			       255.0 / ((float)vis_entries[i].qual));
++//			printf(", \"neighbor\" : \"%s\", \"label\" : \"%3.3f\" }\n",
++//			       mac_to_str(vis_entries[i].mac),
++//			       255.0 / ((float)vis_entries[i].qual));
+ 		}
+ 	}
+ }
+@@ -902,10 +904,10 @@ static void vis_jsondoc_entries(uint8_t
+ 			fprintf(stderr, "ERROR: bad ifindex ...\n");
+ 			continue;
+ 		}
+-		if (vis_entries[i].qual == 0) {
+-			fprintf(stderr, "ERROR: quality = 0?\n");
+-			continue;
+-		}
++//		if (vis_entries[i].qual == 0) {
++//			fprintf(stderr, "ERROR: quality = 0?\n");
++//			continue;
++//		}
+ 
+ 		if (first_neighbor)
+ 			first_neighbor = false;
+@@ -914,10 +916,10 @@ static void vis_jsondoc_entries(uint8_t
+ 
+ 		printf("         { \"router\" : \"%s\",\n",
+ 		       mac_to_str(ifaces[vis_entries[i].ifindex].mac));
+-		printf("           \"neighbor\" : \"%s\",\n",
++		printf("           \"neighbor\" : \"%s\" }",
+ 		       mac_to_str(vis_entries[i].mac));
+-		printf("           \"metric\" : \"%3.3f\" }",
+-		       255.0 / ((float)vis_entries[i].qual));
++//		printf("           \"metric\" : \"%3.3f\" }",
++//		       255.0 / ((float)vis_entries[i].qual));
+ 	}
+ 
+ 	printf("\n      ],\n");
+@@ -926,13 +928,14 @@ static void vis_jsondoc_entries(uint8_t
+ 
+ 	for (i = 0; i < entries_n; i++) {
+ 		if (vis_entries[i].ifindex == 255) {
++			if (vis_entries[i].mac[0] & 0x1)
++				continue;
+ 			if (first_tt)
+ 				first_tt = false;
+ 			else
+ 				printf(",\n");
+-
+ 			printf("        \"%s\"",
+-			       mac_to_str(vis_entries[i].mac));
++			       		mac_to_str(vis_entries[i].mac));
+ 		}
+ 	}
+ 	printf("\n      ]\n");

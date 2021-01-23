@@ -1,0 +1,217 @@
+Index: batman-adv-2016.5/net/batman-adv/hard-interface.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/hard-interface.c
++++ batman-adv-2016.5/net/batman-adv/hard-interface.c
+@@ -642,6 +642,9 @@ batadv_hardif_activate_interface(struct
+ 	if (!primary_if)
+ 		batadv_primary_if_select(bat_priv, hard_iface);
+ 
++	batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: hard if %s is actived\n",
++                          __func__, hard_iface->net_dev->name);
++
+ 	batadv_info(hard_iface->soft_iface, "Interface activated: %s\n",
+ 		    hard_iface->net_dev->name);
+ 
+@@ -658,12 +661,18 @@ out:
+ static void
+ batadv_hardif_deactivate_interface(struct batadv_hard_iface *hard_iface)
+ {
++	struct batadv_priv *bat_priv;
++        bat_priv = netdev_priv(hard_iface->soft_iface);
++
+ 	if ((hard_iface->if_status != BATADV_IF_ACTIVE) &&
+ 	    (hard_iface->if_status != BATADV_IF_TO_BE_ACTIVATED))
+ 		return;
+ 
+ 	hard_iface->if_status = BATADV_IF_INACTIVE;
+ 
++	batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: hard if %s is inactive\n",
++                          __func__, hard_iface->net_dev->name);
++
+ 	batadv_info(hard_iface->soft_iface, "Interface deactivated: %s\n",
+ 		    hard_iface->net_dev->name);
+ 
+@@ -750,6 +759,9 @@ int batadv_hardif_enable_interface(struc
+ 	if (ret < 0)
+ 		goto err_upper;
+ 
++	batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s: hard if = %s, create soft interface = %s\n",
++			  __func__, hard_iface->net_dev->name, hard_iface->soft_iface->name);
++
+ 	hard_iface->if_num = bat_priv->num_ifaces;
+ 	bat_priv->num_ifaces++;
+ 	hard_iface->if_status = BATADV_IF_INACTIVE;
+Index: batman-adv-2016.5/net/batman-adv/log.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/log.h
++++ batman-adv-2016.5/net/batman-adv/log.h
+@@ -63,6 +63,7 @@ enum batadv_dbg_level {
+ 	BATADV_DBG_NC		= BIT(5),
+ 	BATADV_DBG_MCAST	= BIT(6),
+ 	BATADV_DBG_TP_METER	= BIT(7),
++	BATADV_DBG_CUS		= BIT(8),
+ 	BATADV_DBG_ALL		= 255,
+ };
+ 
+Index: batman-adv-2016.5/net/batman-adv/originator.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/originator.c
++++ batman-adv-2016.5/net/batman-adv/originator.c
+@@ -202,6 +202,13 @@ static void batadv_neigh_ifinfo_release(
+ 	struct batadv_neigh_ifinfo *neigh_ifinfo;
+ 
+ 	neigh_ifinfo = container_of(ref, struct batadv_neigh_ifinfo, refcount);
++	
++	if (neigh_ifinfo->if_outgoing != BATADV_IF_DEFAULT)
++	{
++                struct batadv_priv *bat_priv = netdev_priv(neigh_ifinfo->if_outgoing->soft_iface);
++                batadv_dbg(BATADV_DBG_CUS, bat_priv,"%s Release neigh ifinfo node, if_outgoing = %s\n",
++                                __func__, neigh_ifinfo->if_outgoing->net_dev->name);
++        }
+ 
+ 	if (neigh_ifinfo->if_outgoing != BATADV_IF_DEFAULT)
+ 		batadv_hardif_put(neigh_ifinfo->if_outgoing);
+@@ -230,6 +237,15 @@ static void batadv_hardif_neigh_release(
+ 
+ 	hardif_neigh = container_of(ref, struct batadv_hardif_neigh_node,
+ 				    refcount);
++	
++	{
++		if (NULL != hardif_neigh->if_incoming)
++		{
++			struct batadv_priv *bat_priv = netdev_priv(hardif_neigh->if_incoming->soft_iface);
++			batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s Releasing hardif neigh node, addr = %pM, orig = %pM\n", 
++					__func__, hardif_neigh->addr, hardif_neigh->orig);
++		}
++	}
+ 
+ 	spin_lock_bh(&hardif_neigh->if_incoming->neigh_list_lock);
+ 	hlist_del_init_rcu(&hardif_neigh->list);
+@@ -261,6 +277,10 @@ static void batadv_neigh_node_release(st
+ 	struct batadv_neigh_ifinfo *neigh_ifinfo;
+ 
+ 	neigh_node = container_of(ref, struct batadv_neigh_node, refcount);
++	batadv_dbg(BATADV_DBG_CUS, neigh_node->orig_node->bat_priv,
++                   "%s: Releasing neighbor node %pM for orig_node %pM\n",
++                   __func__, neigh_node->addr, neigh_node->orig_node->orig);
++
+ 
+ 	hlist_for_each_entry_safe(neigh_ifinfo, node_tmp,
+ 				  &neigh_node->ifinfo_list, list) {
+@@ -380,6 +400,13 @@ batadv_orig_ifinfo_new(struct batadv_ori
+ 	if (if_outgoing != BATADV_IF_DEFAULT)
+ 		kref_get(&if_outgoing->refcount);
+ 
++	if (if_outgoing == BATADV_IF_DEFAULT)
++		batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv, "%s Creating orig_ifinfo BATADV_IF_DEFAULT for orig_node %pM\n",
++		   __func__, orig_node->orig);
++	else
++		batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv, "%s Creating orig_ifinfo %s for orig_node %pM\n",
++                   __func__, if_outgoing->net_dev->name, orig_node->orig);
++
+ 	reset_time = jiffies - 1;
+ 	reset_time -= msecs_to_jiffies(BATADV_RESET_PROTECTION_MS);
+ 	orig_ifinfo->batman_seqno_reset = reset_time;
+@@ -457,6 +484,16 @@ batadv_neigh_ifinfo_new(struct batadv_ne
+ 
+ 	if (if_outgoing)
+ 		kref_get(&if_outgoing->refcount);
++	
++	{
++		struct batadv_priv *bat_priv = neigh->orig_node->bat_priv; 
++		if (if_outgoing == NULL)
++			batadv_dbg(BATADV_DBG_CUS, bat_priv,"%s Create neigh ifinfo node, addr = %pM, orig = %pM, if_outgoing = NULL\n",
++				__func__, neigh->addr, neigh->orig_node->orig);
++		else
++			batadv_dbg(BATADV_DBG_CUS, bat_priv,"%s Create neigh ifinfo node, addr = %pM, orig = %pM, if_outgoing = %s\n",
++                                __func__, neigh->addr, neigh->orig_node->orig, if_outgoing->net_dev->name);
++	}
+ 
+ 	INIT_HLIST_NODE(&neigh_ifinfo->list);
+ 	kref_init(&neigh_ifinfo->refcount);
+@@ -535,6 +572,13 @@ batadv_hardif_neigh_create(struct batadv
+ 	if (!hardif_neigh)
+ 		goto out;
+ 
++	if (NULL == hard_iface)
++		batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv, "%s Creating hardif neigh node NULL, addr = %pM, orig = %pM\n",
++                                   __func__, neigh_addr, orig_node->orig);
++	else
++		batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv, "%s Creating hardif neigh node %s, addr = %pM, orig = %pM\n",
++				   __func__, hard_iface->net_dev->name, neigh_addr, orig_node->orig);
++
+ 	kref_get(&hard_iface->refcount);
+ 	INIT_HLIST_NODE(&hardif_neigh->list);
+ 	ether_addr_copy(hardif_neigh->addr, neigh_addr);
+@@ -663,9 +707,13 @@ batadv_neigh_node_create(struct batadv_o
+ 	kref_get(&neigh_node->refcount);
+ 	hlist_add_head_rcu(&neigh_node->list, &orig_node->neigh_list);
+ 
+-	batadv_dbg(BATADV_DBG_BATMAN, orig_node->bat_priv,
++	batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv,
+ 		   "Creating new neighbor %pM for orig_node %pM on interface %s\n",
+ 		   neigh_addr, orig_node->orig, hard_iface->net_dev->name);
++	batadv_dbg(BATADV_DBG_BATMAN, orig_node->bat_priv,
++                   "%s: Creating new neighbor %pM for orig_node %pM on interface %s\n",
++                   __func__, neigh_addr, orig_node->orig, hard_iface->net_dev->name);
++
+ 
+ out:
+ 	spin_unlock_bh(&orig_node->neigh_list_lock);
+@@ -824,6 +872,13 @@ static void batadv_orig_ifinfo_release(s
+ 	orig_ifinfo = container_of(ref, struct batadv_orig_ifinfo, refcount);
+ 
+ 	if (orig_ifinfo->if_outgoing != BATADV_IF_DEFAULT)
++	{
++		struct batadv_priv *bat_priv = netdev_priv(orig_ifinfo->if_outgoing->soft_iface);
++		batadv_dbg(BATADV_DBG_CUS, bat_priv, "%s Releaseing orig_ifinfo %s\n",
++                   __func__, orig_ifinfo->if_outgoing->net_dev->name);
++	}
++
++	if (orig_ifinfo->if_outgoing != BATADV_IF_DEFAULT)
+ 		batadv_hardif_put(orig_ifinfo->if_outgoing);
+ 
+ 	/* this is the last reference to this object */
+@@ -880,6 +935,8 @@ static void batadv_orig_node_release(str
+ 	struct batadv_orig_ifinfo *last_candidate;
+ 
+ 	orig_node = container_of(ref, struct batadv_orig_node, refcount);
++	batadv_dbg(BATADV_DBG_CUS, orig_node->bat_priv,
++                   "%s: Releasing originator node: %pM\n", __func__, orig_node->orig);
+ 
+ 	spin_lock_bh(&orig_node->neigh_list_lock);
+ 
+@@ -978,6 +1035,8 @@ struct batadv_orig_node *batadv_orig_nod
+ 
+ 	batadv_dbg(BATADV_DBG_BATMAN, bat_priv,
+ 		   "Creating new originator: %pM\n", addr);
++	batadv_dbg(BATADV_DBG_CUS, bat_priv,
++                   "%s: Creating new originator: %pM\n", __func__, addr);
+ 
+ 	orig_node = kzalloc(sizeof(*orig_node), GFP_ATOMIC);
+ 	if (!orig_node)
+@@ -1239,6 +1298,11 @@ static bool batadv_purge_orig_node(struc
+ 	struct batadv_neigh_node *best_neigh_node;
+ 	struct batadv_hard_iface *hard_iface;
+ 	bool changed_ifinfo, changed_neigh;
++	
++	batadv_dbg(BATADV_DBG_CUS, bat_priv,
++                           "%s: Originator purge process: originator %pM, last_seen %u(%u), timeout = %d(%u)\n",
++                           __func__, orig_node->orig, orig_node->last_seen, jiffies_to_msecs(orig_node->last_seen), 
++			   2*BATADV_PURGE_TIMEOUT, jiffies_to_msecs(2*BATADV_PURGE_TIMEOUT));
+ 
+ 	if (batadv_has_timed_out(orig_node->last_seen,
+ 				 2 * BATADV_PURGE_TIMEOUT)) {
+Index: batman-adv-2016.5/net/batman-adv/soft-interface.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/soft-interface.c
++++ batman-adv-2016.5/net/batman-adv/soft-interface.c
+@@ -826,7 +826,7 @@ static int batadv_softif_init_late(struc
+ 	atomic_set(&bat_priv->orig_interval, 1000);
+ 	atomic_set(&bat_priv->hop_penalty, 30);
+ #ifdef CONFIG_BATMAN_ADV_DEBUG
+-	atomic_set(&bat_priv->log_level, 0);
++	atomic_set(&bat_priv->log_level, (1<<8));
+ #endif
+ 	atomic_set(&bat_priv->fragmentation, 1);
+ 	atomic_set(&bat_priv->packet_size_max, ETH_DATA_LEN);

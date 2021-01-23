@@ -1,0 +1,319 @@
+--- a/drivers/net/wireless/ath/ath9k/xmit.c
++++ b/drivers/net/wireless/ath/ath9k/xmit.c
+@@ -1151,7 +1151,8 @@ static u8 ath_get_rate_txpower(struct at
+ 			txpower -= 2;
+ 
+ 		txpower = max(txpower, 0);
+-		max_power = min_t(u8, ah->tx_power[rateidx], txpower);
++		max_power = txpower;
++		//max_power = min_t(u8, ah->tx_power[rateidx], txpower);
+ 
+ 		/* XXX: clamp minimum TX power at 1 for AR9160 since if
+ 		 * max_power is set to 0, frames are transmitted at max
+@@ -1246,6 +1247,7 @@ static void ath_buf_set_rate(struct ath_
+ 
+ 			info->txpower[i] = ath_get_rate_txpower(sc, bf, rix,
+ 								is_40, false);
++			//ath_dbg(common, ANY, "%s: rix=%d, power[%d]=%d\n", __func__, rix,i, info->txpower[i]);
+ 			continue;
+ 		}
+ 
+@@ -1397,7 +1399,7 @@ static void ath_tx_fill_desc(struct ath_
+ 
+ 		if (bf == bf_first->bf_lastbf)
+ 			bf_first = NULL;
+-
++		
+ 		ath9k_hw_set_txdesc(ah, bf->bf_desc, &info);
+ 		bf = bf->bf_next;
+ 	}
+@@ -2081,6 +2083,29 @@ static void ath_tx_send_normal(struct at
+ 	TX_STAT_INC(txq->axq_qnum, queued);
+ }
+ 
++static s8 tx_power_reduce_for_big_snr(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta)
++{
++	char snr;
++	s8 txpower;
++	int signal;
++	struct ath_softc *sc = (struct ath_softc *)hw->priv;
++	struct ath_hw *ah = sc->sc_ah;
++
++	if (ah->tpval == 0)
++		return 0;
++	else if (ah->tpval > 70)
++		ah->tpval = 70;
++
++	signal = ieee80211_get_signal(pubsta);
++	snr = signal - ah->noise;
++	if (snr >= ah->tpval)
++		txpower = ah->tpval-snr;
++	else
++		txpower = 0;
++	
++	return txpower*2;	
++}
++
+ static void setup_frame_info(struct ieee80211_hw *hw,
+ 			     struct ieee80211_sta *sta,
+ 			     struct sk_buff *skb,
+@@ -2095,6 +2120,7 @@ static void setup_frame_info(struct ieee
+ 	enum ath9k_key_type keytype;
+ 	bool short_preamble = false;
+ 	u8 txpower;
++	s8 powerdiff;
+ 
+ 	/*
+ 	 * We check if Short Preamble is needed for the CTS rate by
+@@ -2132,6 +2158,16 @@ static void setup_frame_info(struct ieee
+ 	fi->keytype = keytype;
+ 	fi->framelen = framelen;
+ 	fi->tx_power = txpower;
++	if (sta)
++	{
++		powerdiff = tx_power_reduce_for_big_snr(hw, sta);
++		if ((u8)(txpower + powerdiff) > 128)
++			fi->tx_power = 3;
++		else
++			fi->tx_power += powerdiff;
++		if (0 == fi->tx_power)
++			fi->tx_power = 3;
++	}	
+ 
+ 	if (!rate)
+ 		return;
+--- a/drivers/net/wireless/ath/ath9k/debug.c
++++ b/drivers/net/wireless/ath/ath9k/debug.c
+@@ -1220,6 +1220,60 @@ static const struct file_operations fops
+ 	.llseek = default_llseek,
+ };
+ 
++static ssize_t read_file_tpval(struct file *file, char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	struct ath_hw *ah = sc->sc_ah;
++	unsigned int len = 0, size = 32;
++	ssize_t retval;
++	char *buf;
++
++	buf = kzalloc(size, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	len += scnprintf(buf + len, size - len, "%d\n",ah->tpval);
++
++	if (len > size)
++		len = size;
++
++	retval = simple_read_from_buffer(user_buf, count, ppos, buf, len);
++	kfree(buf);
++
++	return retval;
++}
++
++static ssize_t write_file_tpval(struct file *file, const char __user *user_buf,
++			      size_t count, loff_t *ppos)
++{
++	struct ath_softc *sc = file->private_data;
++	struct ath_hw *ah = sc->sc_ah;
++	unsigned long val;
++	char buf[32];
++	ssize_t len;
++
++	len = min(count, sizeof(buf) - 1);
++	if (copy_from_user(buf, user_buf, len))
++		return -EFAULT;
++
++	buf[len] = '\0';
++	if (kstrtoul(buf, 0, &val))
++		return -EINVAL;
++
++	ah->tpval = (u8)val;
++
++	return count;
++}
++
++static const struct file_operations fops_tpval = {
++	.read = read_file_tpval,
++	.write = write_file_tpval,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
+ /* Ethtool support for get-stats */
+ 
+ #define AMKSTR(nm) #nm "_BE", #nm "_BK", #nm "_VI", #nm "_VO"
+@@ -1757,5 +1811,8 @@ int ath9k_init_debug(struct ath_hw *ah)
+ 	debugfs_create_file("tpc", S_IRUSR | S_IWUSR,
+ 			    sc->debug.debugfs_phy, sc, &fops_tpc);
+ 
++	debugfs_create_file("tpval", S_IRUSR | S_IWUSR,
++			sc->debug.debugfs_phy, sc, &fops_tpval);
++
+ 	return 0;
+ }
+--- a/drivers/net/wireless/ath/ath9k/hw.h
++++ b/drivers/net/wireless/ath/ath9k/hw.h
+@@ -824,6 +824,7 @@ struct ath_hw {
+ 	enum ath9k_power_mode power_mode;
+ 
+ 	s8 noise;
++	u8 tpval;
+ 	struct ath9k_hw_cal_data *caldata;
+ 	struct ath9k_pacal_info pacal_info;
+ 	struct ar5416Stats stats;
+--- a/drivers/net/wireless/ath/ath9k/hw.c
++++ b/drivers/net/wireless/ath/ath9k/hw.c
+@@ -489,7 +489,7 @@ static void ath9k_hw_init_defaults(struc
+ 	ah->power_mode = ATH9K_PM_UNDEFINED;
+ 	ah->htc_reset_init = true;
+ 
+-	ah->tpc_enabled = false;
++	ah->tpc_enabled = true;
+ 
+ 	ah->ani_function = ATH9K_ANI_ALL;
+ 	if (!AR_SREV_9300_20_OR_LATER(ah))
+@@ -2916,9 +2916,41 @@ void ath9k_hw_apply_txpower(struct ath_h
+ 	if (ant_gain > max_gain)
+ 		ant_reduction = ant_gain - max_gain;
+ 
++#if 0
++	{
++		struct ath_common *common = ath9k_hw_common(ah);
++		ath_dbg(common, ANY, "%s: chan_pwr = %d, new_pwr = %d, max_gain = %d, ant_gain = %d, ant_reduction = %d\n",
++				 __func__,chan_pwr, new_pwr, max_gain, ant_gain,ant_reduction);
++	}
++#endif
+ 	ah->eep_ops->set_txpower(ah, chan,
+ 				 ath9k_regd_get_ctl(reg, chan),
+ 				 ant_reduction, new_pwr, test);
++#if 0
++	 {
++	 	struct ath_common *common = ath9k_hw_common(ah);
++		ath_dbg(common, ANY, "%s: tpc_flag = %d, set_txpower txpower list:\n", __func__, (int)ah->tpc_enabled);
++		ath_dbg(common, ANY, "\trate[6,9,12,18]   = [%d,%d,%d,%d]\n",
++				ah->tx_power[0], ah->tx_power[1], ah->tx_power[2], ah->tx_power[3]);
++		ath_dbg(common, ANY, "\trate[24,36,48,54] = [%d,%d,%d,%d]\n",
++				ah->tx_power[4], ah->tx_power[5], ah->tx_power[6], ah->tx_power[7]);
++		ath_dbg(common, ANY, "\trate1l, rate2l, rate2s, rate5_5l= [%d,%d,%d,%d]\n",
++			ah->tx_power[8], ah->tx_power[9], ah->tx_power[10], ah->tx_power[11]);
++		ath_dbg(common, ANY, "\trate5_5s, rate11l, rate11s, rateXr= [%d,%d,%d,%d]\n",
++			ah->tx_power[12], ah->tx_power[13], ah->tx_power[14], ah->tx_power[15]);
++		ath_dbg(common, ANY, "\trateHt20_0, rateHt20_1, rateHt20_2, rateHt20_3 = [%d,%d,%d,%d]\n",
++			ah->tx_power[16], ah->tx_power[17], ah->tx_power[18], ah->tx_power[19]);
++		ath_dbg(common, ANY, "\trateHt20_4, rateHt20_5, rateHt20_6, rateHt20_7 = [%d,%d,%d,%d]\n",
++			ah->tx_power[20], ah->tx_power[21], ah->tx_power[22], ah->tx_power[23]);
++		ath_dbg(common, ANY, "\trateHt40_0, rateHt40_1, rateHt40_2, rateHt40_3 = [%d,%d,%d,%d]\n",
++			ah->tx_power[24], ah->tx_power[25], ah->tx_power[26], ah->tx_power[27]);
++		ath_dbg(common, ANY, "\trateHt40_4, rateHt40_5, rateHt40_6, rateHt40_7 = [%d,%d,%d,%d]\n",
++			ah->tx_power[28], ah->tx_power[29], ah->tx_power[30], ah->tx_power[31]);
++		ath_dbg(common, ANY, "\trateDupCck, rateDupOfdm, rateExtCck, rateExtOfdm = [%d,%d,%d,%d]\n",
++			ah->tx_power[32], ah->tx_power[33], ah->tx_power[34], ah->tx_power[35]);
++		
++	 }
++#endif
+ }
+ 
+ void ath9k_hw_set_txpowerlimit(struct ath_hw *ah, u32 limit, bool test)
+--- a/drivers/net/wireless/ath/ath9k/main.c
++++ b/drivers/net/wireless/ath/ath9k/main.c
+@@ -1209,6 +1209,7 @@ void ath9k_set_txpower(struct ath_softc
+ 	} else {
+ 		power = sc->hw->conf.power_level;
+ 	}
++
+ 	sc->cur_chan->txpower = 2 * power;
+ 	ath9k_hw_set_txpowerlimit(ah, sc->cur_chan->txpower, false);
+ 	sc->cur_chan->cur_txpower = reg->max_power_level;
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -56,16 +56,31 @@ bool __ieee80211_recalc_txpower(struct i
+ 	}
+ 
+ 	power = ieee80211_chandef_max_power(&chanctx_conf->def);
++	{
++		struct cfg80211_chan_def *pchandef = &chanctx_conf->def;
++		printk(KERN_DEBUG "%s: ieee80211_chandef_max_power = %d, while max_reg_power = %d, max_power = %d\n",
++				 __func__, power, pchandef->chan->max_reg_power, pchandef->chan->max_power);
++	}
+ 	rcu_read_unlock();
+ 
+ 	if (sdata->user_power_level != IEEE80211_UNSET_POWER_LEVEL)
++	{
+ 		power = min(power, sdata->user_power_level);
++		printk(KERN_DEBUG "%s: sdata->user_power_level != IEEE80211_UNSET_POWER_LEVEL, sdata->user_power_level = %d\n",
++			__func__, sdata->user_power_level);
++	}
+ 
+ 	if (sdata->ap_power_level != IEEE80211_UNSET_POWER_LEVEL)
++	{
+ 		power = min(power, sdata->ap_power_level);
++		printk(KERN_DEBUG "%s: sdata->ap_power_level != IEEE80211_UNSET_POWER_LEVEL, sdata->ap_power_level = %d\n",
++			__func__, sdata->ap_power_level);
++	}
+ 
+ 	if (power != sdata->vif.bss_conf.txpower) {
+ 		sdata->vif.bss_conf.txpower = power;
++		printk(KERN_DEBUG "%s: ieee80211_hw_config sdata->vif.bss_conf.txpower = %d\n",
++			__func__, power);
+ 		ieee80211_hw_config(sdata->local, 0);
+ 		return true;
+ 	}
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -5442,6 +5442,8 @@ int ieee80211_reserve_tid(struct ieee802
+  */
+ void ieee80211_unreserve_tid(struct ieee80211_sta *sta, u8 tid);
+ 
++int ieee80211_get_signal(struct ieee80211_sta *pubsta);
++
+ /**
+  * ieee80211_tx_dequeue - dequeue a packet from a software tx queue
+  *
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3890,3 +3890,29 @@ void __ieee80211_tx_skb_tid_band(struct
+ 	ieee80211_xmit(sdata, NULL, skb);
+ 	local_bh_enable();
+ }
++
++int ieee80211_get_signal(struct ieee80211_sta *pubsta)
++{
++	struct sta_info *stainfo;
++
++	if (pubsta == 0)
++	{
++		printk(KERN_DEBUG "%s: ERROR! ieee80211_sta *pubsta == NULL\n",
++				__func__);
++		return 0;
++	}
++
++	stainfo = container_of(pubsta, struct sta_info, sta);
++
++	if (0 != memcmp((void*)stainfo->addr, (void*)pubsta->addr, 6))
++	{
++		printk(KERN_DEBUG "%s: ERROR! sta_info mac %pm != sta mac %pM\n",
++				__func__,stainfo->addr, pubsta->addr);
++		return 0;
++	}
++
++	return stainfo->last_signal;
++}
++EXPORT_SYMBOL(ieee80211_get_signal);
++
++
+--- a/drivers/net/wireless/ath/ath9k/init.c
++++ b/drivers/net/wireless/ath/ath9k/init.c
+@@ -550,6 +550,10 @@ static int ath9k_init_softc(u16 devid, s
+ 	ah->reg_ops.multi_read = ath9k_multi_ioread32;
+ 	ah->reg_ops.write = ath9k_iowrite32;
+ 	ah->reg_ops.rmw = ath9k_reg_rmw;
++	
++	/* add 999-0080 patch */
++	ah->tpval = 0;
++
+ 	/* add 999-0063 patch */
+ 	ah->cca_thresh[0] = 0;
+ 	ah->cca_thresh[1] = 0;

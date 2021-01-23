@@ -1,0 +1,347 @@
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -34,6 +34,8 @@
+ #include <sys/ioctl.h>
+ #include <sys/socket.h>
+ #include <sys/un.h>
++#include <sys/time.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include "batman_adv.h"
+@@ -334,6 +336,70 @@ static int get_if_index_devindex(struct
+ 	return i;
+ }
+ 
++int inet_sock_open(struct globals *globals)
++{
++#if 1
++	int ret = 0;
++	unsigned char ipv4[4];
++	struct sockaddr_in addr;
++
++	memset(&addr, 0, sizeof(addr));
++	addr.sin_family = AF_INET;
++	addr.sin_port = htons(globals->port);
++	str_to_ipv4((char*)globals->sock_inet_ipv4, ipv4);
++	memcpy(&addr.sin_addr.s_addr, ipv4, 4);
++	//addr.sin_addr.s_addr = htonl(globals->sock_inet_ipv4);
++
++	printf("sock ip = %s, port = %d\n", globals->sock_inet_ipv4, globals->port);
++	printf("family=%d, type=%d, proto=%d\n", (int)AF_INET, (int)SOCK_STREAM, (int)6);
++	globals->ser2net_fd = socket(AF_INET, SOCK_STREAM, 6);
++	if (globals->ser2net_fd < 0){
++		printf("can't create inet socket\n");
++		return -1;
++	}
++
++	{
++		struct sockaddr *paddr = (struct sockaddr *)&addr;
++		int i;
++		char *pbuf = &paddr->sa_data[0];
++		for(i = 0; i < 15; i++)
++			printf("0x%02x ", pbuf[i]);
++		printf("\n");
++	}
++
++	ret = connect(globals->ser2net_fd, (struct sockaddr *)&addr, sizeof(struct sockaddr));
++	if (ret != 0) {
++		close(globals->ser2net_fd);
++		globals->ser2net_fd = -1;
++		printf("can't connect inet socket = %d\n", ret);
++		return -1;
++	}
++#else
++	struct sockaddr_un addr;
++
++        globals->ser2net_fd = socket(AF_LOCAL, SOCK_STREAM, 0);
++        if (globals->ser2net_fd < 0) {
++                printf("can't create unix socket\n");
++                return -1;
++        }
++
++        memset(&addr, 0, sizeof(addr));
++        addr.sun_family = AF_LOCAL;
++        strncpy(addr.sun_path, "/tmp/ser.sock", sizeof("/tmp/ser.sock"));
++        addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
++
++        if (connect(globals->ser2net_fd, (struct sockaddr *)&addr,sizeof(addr)) < 0) {
++                close(globals->ser2net_fd);
++                globals->ser2net_fd = -1;
++                printf("can't connect to unix socket\n");
++                return -1;
++        }
++	
++#endif
++	return 0;
++	
++}
++
+ static int alfred_open_sock(struct globals *globals)
+ {
+ 	struct sockaddr_un addr;
+@@ -1223,6 +1289,8 @@ static void vis_usage(void)
+ 	printf("  -s, --server                start up in server mode, which regularly updates vis data from batman-adv\n");
+ 	printf("  -f, --format <format>       specify the output format for client mode (either \"json\", \"jsondoc\" or \"dot\")\n");
+ 	printf("  -u, --unix-path <path>      path to unix socket used for alfred server communication (default: \""ALFRED_SOCK_PATH_DEFAULT"\")\n");
++	printf("  -p, --port                  input the ser2net port\n");
++	printf("  -a, --addr                  input the ser2net ipv4\n");
+ 	printf("  -v, --version               print the version\n");
+ 	printf("  -h, --help                  this help\n");
+ 	printf("\n");
+@@ -1239,6 +1307,8 @@ static struct globals *vis_init(int argc
+ 		{"unix-path", 	required_argument,	NULL,	'u'},
+ 		{"help",	no_argument,		NULL,	'h'},
+ 		{"version",	no_argument,		NULL,	'v'},
++		{"ser2net",     required_argument,      NULL,   'p'},
++		{"ser_ipaddr",  required_argument,      NULL,   'a'},
+ 		{NULL,		0,			NULL,	0},
+ 	};
+ 
+@@ -1249,8 +1319,10 @@ static struct globals *vis_init(int argc
+ 	globals->interface = "bat0";
+ 	globals->vis_format = FORMAT_DOT;
+ 	globals->unix_path = ALFRED_SOCK_PATH_DEFAULT;
++	globals->port = 2002;
++	memcpy(globals->sock_inet_ipv4, "0.0.0.0", sizeof("0.0.0.0"));
+ 
+-	while ((opt = getopt_long(argc, argv, "shf:i:vu:", long_options,
++	while ((opt = getopt_long(argc, argv, "shf:i:vu:p:a:", long_options,
+ 				  &opt_ind)) != -1) {
+ 		switch (opt) {
+ 		case 's':
+@@ -1278,6 +1350,15 @@ static struct globals *vis_init(int argc
+ 			printf("%s %s\n", argv[0], SOURCE_VERSION);
+ 			printf("VIS alfred client\n");
+ 			return NULL;
++		case 'p':
++			globals->port = atoi(optarg);
++			printf("set port = %d\n", globals->port);
++			break;
++		case 'a':
++			printf("get ip = %s\n", optarg);
++			memcpy(globals->sock_inet_ipv4, optarg, sizeof(globals->sock_inet_ipv4));
++			printf("set ip = %s\n", globals->sock_inet_ipv4);
++			break;
+ 		case 'h':
+ 		default:
+ 			vis_usage();
+@@ -1291,7 +1372,7 @@ static struct globals *vis_init(int argc
+ }
+ 
+ 
+-
++static void vis_ser2net_recv(struct globals *globals);
+ static int vis_server(struct globals *globals)
+ {
+ 	debugfs_mount(NULL);
+@@ -1311,12 +1392,195 @@ static int vis_server(struct globals *gl
+ 
+ 	while (1) {
+ 		vis_update_data(globals);
++		vis_ser2net_recv(globals);
+ 		sleep(UPDATE_INTERVAL);
+ 	}
+ 
+ 	return 0;
+ }
+ 
++
++static unsigned int get_time_ms()
++{
++	unsigned int ret;
++	struct timeval time;
++	gettimeofday(&time, NULL);
++
++	ret = time.tv_sec*1000+time.tv_usec/1000;
++	return ret;
++}
++
++static unsigned int get_time_diff(unsigned int time0, unsigned time1)
++{
++	unsigned int ret;
++	if (time1 > time0)
++		ret = time1 - time0;
++	else
++		ret = (0xFFFFFFFF) - time0 + time1 + 1;
++        return ret;
++}
++
++static int gps_split_find(char *in, int len, int idx, char *out)
++{
++	int i;
++	int num = 0;
++	int pos0 = 0;
++	int pos1 = 0;
++
++	for(i = 0; i < len; i++)
++	{
++		if (in[i] == ',')
++			num++;
++		else
++			continue;
++
++		if (num == idx)
++		{
++			pos0 = i+1;
++			continue;
++		}
++		else if (num == (idx+1))
++		{
++			pos1 = i;
++			break;
++		}
++	}
++
++	if ((pos0 != 0) && (pos1 != 0))
++	{
++		memcpy(out, &in[pos0], pos1-pos0);
++		out[pos1-pos0] = '\0';
++		return 0;
++	}
++	else
++		return 1;
++}
++
++static int gps_command_proc(char *buf, int len)
++{
++	int ret;
++	int i;
++	char tmpbuf[128];
++	char gpsbuf[6][32];
++
++	ret = memcmp(buf, "$GNRMC", 5);
++	if (ret != 0)
++		return -1;
++	ret = gps_split_find(buf, len, 2, tmpbuf);
++	if (ret != 0)
++	{
++		printf("can't find gps status, %s\n", buf);
++		return -2;
++	}
++
++	if (tmpbuf[0] == 'V')
++	{
++		printf("GPS infomation is invalid!\n");
++		return 0;
++	}
++	else if (tmpbuf[0] == 'A')
++	{
++		for(i = 3; i < 8; i++)
++		{
++			if (!gps_split_find(buf, len, i, tmpbuf))
++			{
++				//printf("%d: %s, len=%d\n", i, tmpbuf, strlen(tmpbuf));
++				memcpy(gpsbuf[i-3], tmpbuf, strlen(tmpbuf));
++				gpsbuf[i-3][strlen(tmpbuf)] = '\0';
++			}
++		}
++
++		printf("%s%s, %s%s, speed=%s\n", gpsbuf[0], gpsbuf[1], gpsbuf[2], gpsbuf[3], gpsbuf[4]);
++		return 0;
++	}
++	else
++		printf("GPS information status error! %s\n", tmpbuf);
++	return -1;
++}
++
++static int gps_info_proc(char *in, int len)
++{
++	int i;
++	int ret = 0;
++	char buf[256];
++	int pos0, pos1;
++	bool startfound = false;
++
++	pos0 = 0;
++	pos1 = 0;
++
++	for(i = 0; i < len; i++)
++	{
++		if (in[i] == '$')
++		{
++			if (startfound)
++			{
++				pos1 = i;
++				memcpy(buf, &in[pos0], pos1-pos0);
++				buf[pos1-pos0] = '\0';
++				//printf("%s: string is %s\n", __func__, buf);
++				gps_command_proc(buf, strlen(buf));
++				pos0 = i;
++			}
++			else
++			{
++				pos0 = i;
++				startfound = true;
++			}
++		}
++	}
++
++	if (startfound)
++		ret = pos0;
++	else
++		ret = 0;
++	return ret;
++}
++
++static void vis_ser2net_recv(struct globals *globals)
++{
++	int ret;
++	unsigned int time0, time1, time2;
++	int len;
++	char *buf;
++	char serbuf[2048];
++
++	memset(&serbuf[0], 0, sizeof(serbuf));
++
++	ret = inet_sock_open(globals);
++	if (ret != 0)
++	{
++		printf("inet_sock_open error = %d\n", ret);
++		return;
++	}
++
++	time0 = get_time_ms();
++	len = 0;
++	buf = &serbuf[0];
++	while(1)
++	{
++		ret = recv(globals->ser2net_fd, buf, sizeof(buf), 0);
++		if (ret > 0)
++			len += ret;
++		buf += ret;
++
++		time1 = get_time_ms();
++		time2 = get_time_diff(time0, time1);
++		if (time2 > 1000)
++		{
++			serbuf[len] = '\0';
++			//printf("=============================\n");
++			//printf("%s\n", &gpsbuf[gpsbuf_idx][0]);
++			//printf("=============================\n");
++			ret = gps_info_proc(&serbuf[0], len);
++			break;
++		}
++	}
++
++	close(globals->ser2net_fd);
++	return;
++}
++
+ int main(int argc, char *argv[])
+ {
+ 	struct globals *globals;
+--- a/vis/vis.h
++++ b/vis/vis.h
+@@ -103,6 +103,11 @@ struct globals {
+ 	enum vis_format vis_format;
+ 	uint8_t buf[65536];
+ 
++	/* add for ser2net client */
++	uint32_t port;
++	uint8_t sock_inet_ipv4[32];
++	int ser2net_fd;
++
+ 	/* internal pointers into buf */
+ 	struct alfred_request_v0 *request;
+ 	struct alfred_push_data_v0 *push;

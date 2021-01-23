@@ -1,0 +1,158 @@
+--- a/net/batman-adv/debugfs.c
++++ b/net/batman-adv/debugfs.c
+@@ -269,6 +269,112 @@ static struct batadv_debuginfo *batadv_h
+ 	NULL,
+ };
+ 
++
++/* add by king wang */
++static ssize_t read_file_hostname(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
++{
++	struct batadv_priv *bat_priv = netdev_priv(file->private_data);
++	char buf[32];
++	unsigned int len;
++
++	len = sprintf(buf, "%s\n", bat_priv->hostname);
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t write_file_hostname(struct file *file, const char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct batadv_priv *bat_priv = netdev_priv(file->private_data);
++	char buf[32];
++	int i;
++	ssize_t len;
++
++	len = min(count, sizeof(buf) - 1);
++	if (copy_from_user(buf, user_buf, len))
++		return -EFAULT;
++
++	buf[len] = '\0';
++	
++	for(i = 0; i < 32; i++)
++	{
++		if ((buf[i] == '\r') || (buf[i] == '\n'))
++		{
++			buf[i] = '\0';
++			break;
++		}
++		else if (buf[i] == '\0')
++			break;
++	}
++		
++
++	memcpy(bat_priv->hostname, buf, len);
++
++	return count;
++}
++
++static const struct file_operations fops_hostname = {
++	.read = read_file_hostname,
++	.write = write_file_hostname,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
++static ssize_t read_file_ipv4(struct file *file, char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct batadv_priv *bat_priv = netdev_priv(file->private_data);
++	char buf[32];
++	unsigned int len;
++
++	len = sprintf(buf, "%s\n", bat_priv->ipv4);
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t write_file_ipv4(struct file *file, const char __user *user_buf,
++			     size_t count, loff_t *ppos)
++{
++	struct batadv_priv *bat_priv = netdev_priv(file->private_data);
++	char buf[32];
++	int i;
++	ssize_t len;
++
++	len = min(count, sizeof(buf) - 1);
++	if (copy_from_user(buf, user_buf, len))
++		return -EFAULT;
++
++	buf[len] = '\0';
++
++	for(i = 0; i < 32; i++)
++        {
++                if ((buf[i] == '\r') || (buf[i] == '\n'))
++                {
++                        buf[i] = '\0';
++                        break;
++                }
++                else if (buf[i] == '\0')
++                        break;
++        }
++
++
++	memcpy(bat_priv->ipv4, buf, len);
++
++	return count;
++}
++
++static const struct file_operations fops_ipv4 = {
++	.read = read_file_ipv4,
++	.write = write_file_ipv4,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
++/* end add */
++
++
++
++
+ void batadv_debugfs_init(void)
+ {
+ 	struct batadv_debuginfo **bat_debug;
+@@ -399,6 +505,18 @@ int batadv_debugfs_add_meshif(struct net
+ 			goto rem_attr;
+ 		}
+ 	}
++	file = debugfs_create_file("hostname", S_IRUSR | S_IWUSR, bat_priv->debug_dir, dev, &fops_hostname);
++	if (!file) {
++                batadv_err(dev, "Can't add debugfs file: %s/%s\n",dev->name, "hostname");
++                goto rem_attr;
++	}
++	
++	file = debugfs_create_file("ipv4", S_IRUSR | S_IWUSR, bat_priv->debug_dir, dev, &fops_ipv4);
++        if (!file) {
++                batadv_err(dev, "Can't add debugfs file: %s/%s\n",dev->name, "ipv4");
++                goto rem_attr;
++        } 
++   
+ 
+ 	if (batadv_nc_init_debugfs(bat_priv) < 0)
+ 		goto rem_attr;
+--- a/net/batman-adv/types.h
++++ b/net/batman-adv/types.h
+@@ -1126,6 +1126,9 @@ struct batadv_priv {
+ 	spinlock_t forw_bcast_list_lock; /* protects forw_bcast_list */
+ 	spinlock_t tp_list_lock; /* protects tp_list */
+ 	atomic_t tp_num;
++	/* add by king */
++	char hostname[32];
++	char ipv4[32];
+ 	struct delayed_work orig_work;
+ 	struct batadv_hard_iface __rcu *primary_if;  /* rcu protected pointer */
+ 	struct batadv_algo_ops *algo_ops;
+--- a/net/batman-adv/soft-interface.c
++++ b/net/batman-adv/soft-interface.c
+@@ -806,6 +806,9 @@ static int batadv_softif_init_late(struc
+ 	if (!bat_priv->bat_counters)
+ 		return -ENOMEM;
+ 
++	memcpy(bat_priv->hostname, "none", sizeof("none"));
++	memcpy(bat_priv->ipv4, "127.0.0.1", sizeof("127.0.0.1"));
++
+ 	atomic_set(&bat_priv->aggregated_ogms, 1);
+ 	atomic_set(&bat_priv->bonding, 0);
+ #ifdef CONFIG_BATMAN_ADV_BLA

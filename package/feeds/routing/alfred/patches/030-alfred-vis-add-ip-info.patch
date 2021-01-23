@@ -1,0 +1,91 @@
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -133,6 +133,51 @@ static int get_if_mac(char *ifname, uint
+ 	return 0;
+ }
+ 
++static char *ipv4_to_str(uint8_t *ipv4)
++{
++	static char ipstr[20];
++	snprintf(ipstr, sizeof(ipstr), "%d.%d.%d.%d",
++		 ipv4[0], ipv4[1], ipv4[2], ipv4[3]);
++	return ipstr;
++}
++
++static void str_to_ipv4(char *buf, uint8_t *ip)
++{
++	int ret;
++	int ipv4[4];
++
++	if (!buf)
++		return;
++
++	ret = sscanf(buf, "%d.%d.%d.%d", &ipv4[0], &ipv4[1], &ipv4[2], &ipv4[3]);
++	if (ret != 4)
++		return;
++
++	ip[0] = (uint8_t)ipv4[0];
++	ip[1] = (uint8_t)ipv4[1];
++	ip[2] = (uint8_t)ipv4[2];
++	ip[3] = (uint8_t)ipv4[3];
++
++	return;
++}
++
++
++static int get_if_ipv4(char *ifname, uint8_t *ip)
++{
++	FILE *file;
++	char buf[32];
++
++	ifname = ifname; //for warning disable
++
++	file = popen("uci get network.lan.ipaddr","r");
++	fread(buf, sizeof(char), sizeof(buf), file);
++	pclose(file);
++
++	str_to_ipv4(buf, ip);
++
++	return 0;
++}
++
+ static int get_if_index_byname(struct globals *globals, char *ifname)
+ {
+ 	struct iface_list_entry *i_entry;
+@@ -648,9 +693,17 @@ static int compile_vis_data(struct globa
+ 	struct vis_list_entry *v_entry;
+ 	struct vis_entry *vis_entries;
+ 	int iface_n = 0, entries_n = 0;
++	uint8_t ipv4[4];
++
++	if (0 != get_if_ipv4("br-lan", ipv4))
++	{
++		ipv4[0] = 10;	ipv4[1] = 0;
++		ipv4[2] = 0;	ipv4[3] = 1;
++	}
+ 
+ 	list_for_each_entry(i_entry, &globals->iface_list, list) {
+ 		memcpy(&globals->vis_data->ifaces[iface_n], i_entry->mac, ETH_ALEN);
++		memcpy(&globals->vis_data->ifaces[iface_n].ipv4, ipv4, 4);
+ 
+ 		iface_n++;
+ 		if (iface_n == 254)
+@@ -873,7 +926,7 @@ static void vis_jsondoc_interfaces(uint8
+ 	else
+ 		printf(",\n");
+ 
+-	printf("    { \"primary\" : \"%s\",\n", mac_to_str(ifaces[0].mac));
++	printf("    { \"primary\" : \"%s\",\"%s\",\n", mac_to_str(ifaces[0].mac), ipv4_to_str(ifaces[0].ipv4));
+ 	if (iface_n > 1) {
+ 		printf("      \"secondary\" : [ ");
+ 		for (i = 1; i < iface_n; i++) {
+--- a/vis/vis.h
++++ b/vis/vis.h
+@@ -55,6 +55,7 @@ enum vis_format {
+ 
+ struct vis_iface {
+ 	uint8_t mac[ETH_ALEN];
++	uint8_t ipv4[4];
+ };
+ 
+ struct vis_entry {

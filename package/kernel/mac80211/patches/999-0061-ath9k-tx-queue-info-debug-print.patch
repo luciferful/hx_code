@@ -1,0 +1,70 @@
+Index: compat-wireless-2015-07-21/drivers/net/wireless/ath/ath9k/debug.c
+===================================================================
+--- compat-wireless-2015-07-21.orig/drivers/net/wireless/ath/ath9k/debug.c
++++ compat-wireless-2015-07-21/drivers/net/wireless/ath/ath9k/debug.c
+@@ -621,6 +621,48 @@ static int read_file_xmit(struct seq_fil
+ 	return 0;
+ }
+ 
++#define print_queue_macro(ptxq,elem)	\
++			(int)ptxq[0].elem, (int)ptxq[1].elem, (int)ptxq[2].elem, (int)ptxq[3].elem,\
++			(int)ptxq[4].elem, (int)ptxq[5].elem, (int)ptxq[6].elem, (int)ptxq[7].elem,\
++			(int)ptxq[8].elem, (int)ptxq[9].elem\
++
++static void print_queue_info(struct ath_hw *sc_ah,struct seq_file *file)
++{
++	struct ath9k_tx_queue_info *ptxq = &sc_ah->txq[0];
++	seq_printf(file, "Q num:\t0\t1\t2\t3\t4\t5\t6\t7\t8\t9\t\n");
++	seq_printf(file, "Q ver:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n",
++			ptxq[0].tqi_ver, ptxq[1].tqi_ver, ptxq[2].tqi_ver, ptxq[3].tqi_ver,
++			ptxq[4].tqi_ver, ptxq[5].tqi_ver, ptxq[6].tqi_ver, ptxq[7].tqi_ver,
++			ptxq[8].tqi_ver, ptxq[9].tqi_ver);
++	seq_printf(file, "Q typ:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n",
++			(int)ptxq[0].tqi_type, (int)ptxq[1].tqi_type, (int)ptxq[2].tqi_type, (int)ptxq[3].tqi_type,
++			(int)ptxq[4].tqi_type, (int)ptxq[5].tqi_type, (int)ptxq[6].tqi_type, (int)ptxq[7].tqi_type,
++			(int)ptxq[8].tqi_type, (int)ptxq[9].tqi_type);
++	seq_printf(file, "Q ver:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n",
++			ptxq[0].tqi_subtype, ptxq[1].tqi_subtype, ptxq[2].tqi_subtype, ptxq[3].tqi_subtype,
++			ptxq[4].tqi_subtype, ptxq[5].tqi_subtype, ptxq[6].tqi_subtype, ptxq[7].tqi_subtype,
++			ptxq[8].tqi_subtype, ptxq[9].tqi_subtype);
++	seq_printf(file, "Q Qflg:\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t\n",
++			(int)ptxq[0].tqi_qflags, (int)ptxq[1].tqi_qflags, (int)ptxq[2].tqi_qflags, (int)ptxq[3].tqi_qflags,
++			(int)ptxq[4].tqi_qflags, (int)ptxq[5].tqi_qflags, (int)ptxq[6].tqi_qflags, (int)ptxq[7].tqi_qflags,
++			(int)ptxq[8].tqi_qflags, (int)ptxq[9].tqi_qflags);
++	seq_printf(file, "Q pri:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_priority));
++	seq_printf(file, "Q aif:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_aifs));
++	seq_printf(file, "Q cwmin:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_cwmin));
++	seq_printf(file, "Q cwmax:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_cwmax));
++	seq_printf(file, "Q shret:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_shretry));
++	seq_printf(file, "Q lgret:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_lgretry));
++	seq_printf(file, "Q cbrPe:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_cbrPeriod));
++	seq_printf(file, "Q cbrOf:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_cbrOverflowLimit));
++	seq_printf(file, "Q burT:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_burstTime));
++	seq_printf(file, "Q redT:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_readyTime));
++	seq_printf(file, "Q phyCB:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_physCompBuf));
++	seq_printf(file, "Q intF:\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t\n", print_queue_macro(ptxq,tqi_intFlags));
++	
++	return;
++}
++
++
+ static void print_queue(struct ath_softc *sc, struct ath_txq *txq,
+ 			struct seq_file *file)
+ {
+@@ -639,6 +681,7 @@ static int read_file_queues(struct seq_f
+ {
+ 	struct ieee80211_hw *hw = dev_get_drvdata(file->private);
+ 	struct ath_softc *sc = hw->priv;
++	struct ath_hw *sc_ah = sc->sc_ah;
+ 	struct ath_txq *txq;
+ 	int i;
+ 	static const char *qname[4] = {
+@@ -653,6 +696,8 @@ static int read_file_queues(struct seq_f
+ 
+ 	seq_puts(file, "(CAB): ");
+ 	print_queue(sc, sc->beacon.cabq, file);
++	
++	print_queue_info(sc_ah, file);
+ 
+ 	return 0;
+ }

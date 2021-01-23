@@ -1,0 +1,65 @@
+--- a/net/batman-adv/bat_v_elp.c
++++ b/net/batman-adv/bat_v_elp.c
+@@ -74,11 +74,15 @@ static void batadv_v_elp_start_timer(str
+ static u32 batadv_v_elp_get_throughput(struct batadv_hardif_neigh_node *neigh)
+ {
+ 	struct batadv_hard_iface *hard_iface = neigh->if_incoming;
++	struct batadv_priv *bat_priv = netdev_priv(neigh->if_incoming->soft_iface);
+ 	struct ethtool_link_ksettings link_settings;
+ 	struct net_device *real_netdev;
+ 	struct station_info sinfo;
+ 	u32 throughput;
+ 	int ret;
++	struct batadv_orig_node *orig_node;
++
++	orig_node = batadv_orig_hash_find(bat_priv, neigh->addr);
+ 
+ 	/* if the user specified a customised value for this interface, then
+ 	 * return it directly
+@@ -109,6 +113,11 @@ static u32 batadv_v_elp_get_throughput(s
+ 			 */
+ 			return 0;
+ 		}
++		if (orig_node)
++		{
++			orig_node->signal = sinfo.signal;
++			orig_node->signal_avg = sinfo.signal_avg;
++		}
+ 		if (!ret)
+ 			return sinfo.expected_throughput / 100;
+ 	}
+@@ -128,6 +137,12 @@ static u32 batadv_v_elp_get_throughput(s
+ 			hard_iface->bat_v.flags &= ~BATADV_FULL_DUPLEX;
+ 
+ 		throughput = link_settings.base.speed;
++		if (orig_node)
++                {
++                        orig_node->signal = 0x7f;
++                        orig_node->signal_avg = 0x7f;
++                }
++
+ 		if (throughput && (throughput != SPEED_UNKNOWN))
+ 			return throughput * 10;
+ 	}
+--- a/net/batman-adv/types.h
++++ b/net/batman-adv/types.h
+@@ -325,6 +325,8 @@ struct batadv_orig_node {
+ 	u8 orig[ETH_ALEN];
+ 	char hostname[32];
+ 	char ipv4[32];
++	s8 signal;
++	s8 signal_avg;
+ 	struct hlist_head ifinfo_list;
+ 	struct batadv_orig_ifinfo *last_bonding_candidate;
+ #ifdef CONFIG_BATMAN_ADV_DAT
+--- a/net/batman-adv/originator.c
++++ b/net/batman-adv/originator.c
+@@ -1065,6 +1065,8 @@ struct batadv_orig_node *batadv_orig_nod
+ 	batadv_dat_init_orig_node_addr(orig_node);
+ 	atomic_set(&orig_node->last_ttvn, 0);
+ 	orig_node->neigh_flag = 0;
++	orig_node->signal = 0x80;
++	orig_node->signal_avg = 0x80;
+ 	orig_node->tt_buff = NULL;
+ 	orig_node->tt_buff_len = 0;
+ 	orig_node->last_seen = jiffies;

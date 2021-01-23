@@ -1,0 +1,9 @@
+#!/bin/sh /etc/rc.common
+# /init.d/set_rate
+START=99
+
+start() {
+	#exit 0
+	ser2net -c /etc/gps_bd.conf
+}
+

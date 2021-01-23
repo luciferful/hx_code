@@ -1,0 +1,11 @@
+--- a/ar934x_hs_uart.c
++++ b/ar934x_hs_uart.c
+@@ -249,7 +249,7 @@ static void ar934x_hs_uart_get_scale_ste
+ 		
+ 		}
+ 	}
+-	dprintk("%s() clk:%d scale:0x%04X step:0x%04X baud:%d min_diff:%ld\n", __func__, clk, *scale, *step, baud, min_diff);
++	//dprintk("%s() clk:%d scale:0x%04X step:0x%04X baud:%d min_diff:%ld\n", __func__, clk, *scale, *step, baud, min_diff);
+ }
+ 
+ static void ar934x_hs_uart_set_termios(struct uart_port *port,

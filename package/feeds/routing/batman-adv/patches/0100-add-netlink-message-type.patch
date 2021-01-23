@@ -1,0 +1,72 @@
+--- a/include/uapi/linux/batman_adv.h
++++ b/include/uapi/linux/batman_adv.h
+@@ -136,6 +136,14 @@ enum batadv_nl_attrs {
+ 	BATADV_ATTR_BLA_VID,
+ 	BATADV_ATTR_BLA_BACKBONE,
+ 	BATADV_ATTR_BLA_CRC,
++
++	/* add by King */
++	BATADV_ATTR_ORIG_SIG,
++	BATADV_ATTR_ORIG_SIG_AVG,
++	BATADV_ATTR_ORIG_FLAG,
++	BATADV_ATTR_ORIG_HOSTNAME,
++	BATADV_ATTR_ORIG_IPV4,
++	/* end */
+ 	/* add attributes above here, update the policy in netlink.c */
+ 	__BATADV_ATTR_AFTER_LAST,
+ 	NUM_BATADV_ATTR = __BATADV_ATTR_AFTER_LAST,
+--- a/net/batman-adv/bat_v.c
++++ b/net/batman-adv/bat_v.c
+@@ -518,6 +518,8 @@ batadv_v_orig_dump_subentry(struct sk_bu
+ 	u32 throughput;
+ 	void *hdr;
+ 
++	//printk(KERN_DEBUG "%s: Start ......\n", __func__);
++
+ 	n_ifinfo = batadv_neigh_ifinfo_get(neigh_node, if_outgoing);
+ 	if (!n_ifinfo)
+ 		return 0;
+@@ -532,6 +534,8 @@ batadv_v_orig_dump_subentry(struct sk_bu
+ 	    if_outgoing != neigh_node->if_incoming)
+ 		return 0;
+ 
++	//printk(KERN_DEBUG "%s: sig = %d/%d\n", __func__, orig_node->signal, orig_node->signal_avg);
++
+ 	hdr = genlmsg_put(msg, portid, seq, &batadv_netlink_family, NLM_F_MULTI,
+ 			  BATADV_CMD_GET_ORIGINATORS);
+ 	if (!hdr)
+@@ -547,6 +551,20 @@ batadv_v_orig_dump_subentry(struct sk_bu
+ 			last_seen_msecs))
+ 		goto nla_put_failure;
+ 
++	{
++		unsigned char sig, sig_avg;
++		sig = (unsigned char)orig_node->signal;
++		sig_avg = (unsigned char)orig_node->signal_avg;
++		if (nla_put_u8(msg, BATADV_ATTR_ORIG_SIG,sig) || 
++			nla_put_u8(msg, BATADV_ATTR_ORIG_SIG_AVG, sig_avg) ||
++			nla_put(msg, BATADV_ATTR_ORIG_HOSTNAME, strlen(orig_node->hostname)+1, orig_node->hostname) ||
++			nla_put(msg, BATADV_ATTR_ORIG_IPV4, strlen(orig_node->ipv4)+1, orig_node->ipv4))
++		{
++			printk(KERN_DEBUG "%s: put signal error!\n", __func__);
++			goto nla_put_failure;
++		}
++	}	
++
+ 	if (best && nla_put_flag(msg, BATADV_ATTR_FLAG_BEST))
+ 		goto nla_put_failure;
+ 
+--- a/net/batman-adv/netlink.c
++++ b/net/batman-adv/netlink.c
+@@ -96,6 +96,11 @@ static const struct nla_policy batadv_ne
+ 	[BATADV_ATTR_BLA_VID]		= { .type = NLA_U16 },
+ 	[BATADV_ATTR_BLA_BACKBONE]	= { .len = ETH_ALEN },
+ 	[BATADV_ATTR_BLA_CRC]		= { .type = NLA_U16 },
++	[BATADV_ATTR_ORIG_SIG]		= { .type = NLA_U8 },
++	[BATADV_ATTR_ORIG_SIG_AVG]	= { .type = NLA_U8 },
++	[BATADV_ATTR_ORIG_FLAG]		= { .type = NLA_U32 },
++	[BATADV_ATTR_ORIG_HOSTNAME]     = { .type = NLA_STRING },
++	[BATADV_ATTR_ORIG_IPV4]         = { .type = NLA_STRING },
+ };
+ 
+ /**

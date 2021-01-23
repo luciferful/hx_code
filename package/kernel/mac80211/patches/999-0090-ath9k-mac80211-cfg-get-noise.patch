@@ -1,0 +1,148 @@
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -2233,6 +2233,19 @@ static int ieee80211_get_tx_power(struct
+ 	return 0;
+ }
+ 
++static int ieee80211_get_noise(struct wiphy *wiphy, char *noise)
++{
++	struct ieee80211_local *local = wiphy_priv(wiphy);
++
++	if (local->ops->get_noise)
++	{
++        	drv_get_noise(local, noise);
++		return 0;
++	}
++	else
++		return -EINVAL;
++}
++
+ static int ieee80211_set_antenna_gain(struct wiphy *wiphy, int dbi)
+ {
+ 	struct ieee80211_local *local = wiphy_priv(wiphy);
+@@ -3858,6 +3871,7 @@ const struct cfg80211_ops mac80211_confi
+ 	.set_wiphy_params = ieee80211_set_wiphy_params,
+ 	.set_tx_power = ieee80211_set_tx_power,
+ 	.get_tx_power = ieee80211_get_tx_power,
++	.get_noise    = ieee80211_get_noise,
+ 	.set_antenna_gain = ieee80211_set_antenna_gain,
+ 	.set_wds_peer = ieee80211_set_wds_peer,
+ 	.rfkill_poll = ieee80211_rfkill_poll,
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -1290,6 +1290,16 @@ static inline int drv_get_txpower(struct
+ 	return ret;
+ }
+ 
++static inline int drv_get_noise(struct ieee80211_local *local, char *noise)
++{
++
++        if (!local->ops->get_noise)
++	        return -EOPNOTSUPP;
++
++	local->ops->get_noise(&local->hw, noise);
++	        return 0;
++}
++
+ static inline int
+ drv_tdls_channel_switch(struct ieee80211_local *local,
+ 			struct ieee80211_sub_if_data *sdata,
+--- a/net/wireless/rdev-ops.h
++++ b/net/wireless/rdev-ops.h
+@@ -544,6 +544,16 @@ static inline int rdev_get_tx_power(stru
+ 	return ret;
+ }
+ 
++static inline int rdev_get_noise(struct cfg80211_registered_device *rdev, char *noise)
++{
++	int ret = 0;
++	if ((rdev->ops->get_noise) != NULL)
++		ret = rdev->ops->get_noise(&rdev->wiphy, noise);
++	else
++		ret = -1;
++	return ret;
++}
++
+ static inline int rdev_set_wds_peer(struct cfg80211_registered_device *rdev,
+ 				    struct net_device *dev, const u8 *addr)
+ {
+--- a/net/wireless/util.c
++++ b/net/wireless/util.c
+@@ -1803,6 +1803,24 @@ int cfg80211_get_station(struct net_devi
+ }
+ EXPORT_SYMBOL(cfg80211_get_station);
+ 
++int cfg80211_get_noise(struct net_device *dev, char *noise)
++{
++	struct cfg80211_registered_device *rdev;
++        struct wireless_dev *wdev;
++
++
++        wdev = dev->ieee80211_ptr;
++        if (!wdev)
++                return -EOPNOTSUPP;
++
++        rdev = wiphy_to_rdev(wdev->wiphy);
++	if (!rdev->ops->get_noise)
++		return -EOPNOTSUPP;
++
++	return rdev_get_noise(rdev, noise);
++}
++EXPORT_SYMBOL(cfg80211_get_noise);
++
+ /* See IEEE 802.1H for LLC/SNAP encapsulation/decapsulation */
+ /* Ethernet-II snap header (RFC1042 for most EtherTypes) */
+ const unsigned char rfc1042_header[] __aligned(2) =
+--- a/drivers/net/wireless/ath/ath9k/main.c
++++ b/drivers/net/wireless/ath/ath9k/main.c
+@@ -2627,6 +2627,24 @@ static int ath9k_get_txpower(struct ieee
+ 	return 0;
+ }
+ 
++static int ath9k_get_noise(struct ieee80211_hw *hw, char *noise)
++{
++	struct ath_softc *sc = hw->priv;
++	struct ath_hw *ah = sc->sc_ah;
++	struct ath9k_channel *chan = ah->curchan;
++
++	if (ath9k_hw_getnf(ah, chan))
++	{
++		*noise = ah->noise;
++		return 0;
++	}
++	else
++	{
++		*noise = -95;
++		return 1;
++	}
++}
++
+ struct ieee80211_ops ath9k_ops = {
+ 	.tx 		    = ath9k_tx,
+ 	.start 		    = ath9k_start,
+@@ -2674,4 +2692,5 @@ struct ieee80211_ops ath9k_ops = {
+ 	.sw_scan_start	    = ath9k_sw_scan_start,
+ 	.sw_scan_complete   = ath9k_sw_scan_complete,
+ 	.get_txpower        = ath9k_get_txpower,
++	.get_noise	    = ath9k_get_noise,
+ };
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -2577,6 +2577,7 @@ struct cfg80211_ops {
+ 				enum nl80211_tx_power_setting type, int mbm);
+ 	int	(*get_tx_power)(struct wiphy *wiphy, struct wireless_dev *wdev,
+ 				int *dbm);
++	int     (*get_noise)(struct wiphy *wiphy, char *noise);
+ 	int	(*set_antenna_gain)(struct wiphy *wiphy, int dbi);
+ 
+ 	int	(*set_wds_peer)(struct wiphy *wiphy, struct net_device *dev,
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -3455,6 +3455,7 @@ struct ieee80211_ops {
+ 	u32 (*get_expected_throughput)(struct ieee80211_sta *sta);
+ 	int (*get_txpower)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			   int *dbm);
++	int (*get_noise)(struct ieee80211_hw *hw, char *noise);
+ 
+ 	int (*tdls_channel_switch)(struct ieee80211_hw *hw,
+ 				   struct ieee80211_vif *vif,

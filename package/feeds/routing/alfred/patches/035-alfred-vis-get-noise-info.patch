@@ -1,0 +1,78 @@
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -178,6 +178,25 @@ static int get_if_ipv4(char *ifname, uin
+ 	return 0;
+ }
+ 
++static int get_if_noise(char *ifname, int32_t *noise)
++{
++	FILE *file;
++	char buf[32];
++	int32_t nf;
++
++	ifname = ifname; //for warning disable
++
++	file = popen("cat /sys/kernel/debug/ieee80211/phy1/ath9k/dump_nfcal  | grep -r Channel | awk '{ print( $5 ) }'","r");
++	fread(buf, sizeof(char), sizeof(buf), file);
++	pclose(file);
++
++	nf = atoi(buf);
++	*noise = nf;
++
++	return 0;
++
++}
++
+ static void set_ipv4_to_batman_adv(uint8_t *ip)
+ {
+ 	char cmd[128];
+@@ -756,6 +775,7 @@ static int compile_vis_data(struct globa
+ 	int iface_n = 0, entries_n = 0;
+ 	uint8_t ipv4[4];
+ 	uint8_t buf[32];
++	int32_t nf;
+ 
+ 	if (0 != get_if_ipv4("br-lan", ipv4))
+ 	{
+@@ -764,17 +784,17 @@ static int compile_vis_data(struct globa
+ 	}
+ 
+ 	get_hostname(buf, 32);
+-
+-//	get_hostname(name, 32);
+ 	set_hostname_to_batman_adv();
+ 	set_ipv4_to_batman_adv(ipv4);
++	get_if_noise("wlan1", &nf);
+ 
+ 
+ 	list_for_each_entry(i_entry, &globals->iface_list, list) {
+ 		memcpy(&globals->vis_data->ifaces[iface_n].mac, i_entry->mac, ETH_ALEN);
+-		memcpy(&globals->vis_data->ifaces[iface_n].name, buf, strlen(buf));
+-		globals->vis_data->ifaces[iface_n].name[strlen(name)] = '\0';
++		memcpy(&globals->vis_data->ifaces[iface_n].name, buf, strlen((char*)buf));
++		globals->vis_data->ifaces[iface_n].name[strlen((char*)buf)] = '\0';
+ 		memcpy(&globals->vis_data->ifaces[iface_n].ipv4, ipv4, 4);
++		globals->vis_data->ifaces[iface_n].noise = nf;
+ 
+ 		iface_n++;
+ 		if (iface_n == 254)
+@@ -997,7 +1017,8 @@ static void vis_jsondoc_interfaces(uint8
+ 	else
+ 		printf(",\n");
+ 
+-	printf("    { \"primary\" :\"%s\",\"%s\",\"%s\",\n", ifaces[0].name, mac_to_str(ifaces[0].mac), ipv4_to_str(ifaces[0].ipv4));
++	printf("    { \"primary\" :\"%s\",\"%s\",\"%s\",\"%ddBm\",\n", ifaces[0].name, 
++			mac_to_str(ifaces[0].mac), ipv4_to_str(ifaces[0].ipv4), ifaces[0].noise);
+ 	if (iface_n > 1) {
+ 		printf("      \"secondary\" : [ ");
+ 		for (i = 1; i < iface_n; i++) {
+--- a/vis/vis.h
++++ b/vis/vis.h
+@@ -57,6 +57,7 @@ struct vis_iface {
+ 	uint8_t mac[ETH_ALEN];
+ 	uint8_t name[32];
+ 	uint8_t ipv4[4];
++	int32_t noise;
+ };
+ 
+ struct vis_entry {

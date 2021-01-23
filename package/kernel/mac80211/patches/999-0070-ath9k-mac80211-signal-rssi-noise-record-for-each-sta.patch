@@ -1,0 +1,112 @@
+--- a/drivers/net/wireless/ath/ath9k/ath9k.h
++++ b/drivers/net/wireless/ath/ath9k/ath9k.h
+@@ -694,7 +694,7 @@ void ath9k_csa_update(struct ath_softc *
+ #define ATH_ANI_POLLINTERVAL_OLD  100     /* 100 ms */
+ #define ATH_ANI_POLLINTERVAL_NEW  1000    /* 1000 ms */
+ #define ATH_LONG_CALINTERVAL_INT  1000    /* 1000 ms */
+-#define ATH_LONG_CALINTERVAL      30000   /* 30 seconds */
++#define ATH_LONG_CALINTERVAL      3000    /* 3 seconds */
+ #define ATH_RESTART_CALINTERVAL   1200000 /* 20 minutes */
+ #define ATH_ANI_MAX_SKIP_COUNT    10
+ #define ATH_PAPRD_TIMEOUT         100 /* msecs */
+--- a/drivers/net/wireless/ath/ath9k/common.c
++++ b/drivers/net/wireless/ath/ath9k/common.c
+@@ -268,6 +268,12 @@ void ath9k_cmn_process_rssi(struct ath_c
+ 	}
+ 
+ 	rxs->signal = ah->noise + rx_stats->rs_rssi;
++	rxs->rssi = rx_stats->rs_rssi;
++	rxs->noise = ah->noise;
++	rxs->chain_rssi[0] = rx_stats->rs_rssi_ctl[0];
++	rxs->chain_rssi[1] = rx_stats->rs_rssi_ctl[1];
++	rxs->chain_rssi[2] = rx_stats->rs_rssi_ctl[2];
++	//ath_dbg(common, FATAL, "%s: noise=%d, rssi=%d, signal=%d\n",__func__, rxs->noise, rxs->rssi, rxs->signal);
+ }
+ EXPORT_SYMBOL(ath9k_cmn_process_rssi);
+ 
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -1120,6 +1120,9 @@ struct ieee80211_rx_status {
+ 	u8 chains;
+ 	s8 chain_signal[IEEE80211_MAX_CHAINS];
+ 	u8 ampdu_delimiter_crc;
++	s8 noise;
++	s8 rssi;
++	s8 chain_rssi[IEEE80211_MAX_CHAINS];
+ };
+ 
+ /**
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -1429,6 +1429,16 @@ ieee80211_rx_h_sta_process(struct ieee80
+ 	if (!(status->flag & RX_FLAG_NO_SIGNAL_VAL)) {
+ 		sta->last_signal = status->signal;
+ 		ewma_add(&sta->avg_signal, -status->signal);
++		sta->noise = status->noise;
++		ewma_add(&sta->avg_noise, -status->noise);
++		sta->rssi = status->rssi;
++		ewma_add(&sta->avg_rssi, status->rssi);
++		sta->chain_rssi[0] = status->chain_rssi[0];
++		sta->chain_rssi[1] = status->chain_rssi[1];
++		sta->chain_rssi[2] = status->chain_rssi[2];
++		/* printk("KERN_DEBUG: %s, noise=%d, rssi=%d, signal=%d\n", __func__,
++				status->noise, status->rssi, status->signal);
++	*/
+ 	}
+ 
+ 	if (status->chains) {
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -461,6 +461,11 @@ struct sta_info {
+ 	unsigned long rx_dropped;
+ 	int last_signal;
+ 	struct ewma avg_signal;
++	int noise;
++	struct ewma avg_noise;
++	int rssi;
++	struct ewma avg_rssi;
++	int chain_rssi[3];
+ 	int last_ack_signal;
+ 
+ 	u8 chains;
+--- a/net/mac80211/debugfs_sta.c
++++ b/net/mac80211/debugfs_sta.c
+@@ -52,6 +52,30 @@ static const struct file_operations sta_
+ STA_FILE(aid, sta.aid, D);
+ STA_FILE(last_ack_signal, last_ack_signal, D);
+ 
++
++static inline unsigned long dbg_ewma_read(const struct ewma *avg)
++{
++	return avg->internal >> avg->factor;
++}
++static ssize_t sta_info_read(struct file *file, char __user *userbuf,
++			      size_t count, loff_t *ppos)
++{
++	char buf[800];
++	struct sta_info *sta = file->private_data;
++	char *p = &buf[0];
++	p += scnprintf(p, sizeof(buf) + buf - p, "last signal    = %d\n", sta->last_signal);
++	p += scnprintf(p, sizeof(buf) + buf - p, "avg signal     = %lu\n", -dbg_ewma_read(&sta->avg_signal));
++	p += scnprintf(p, sizeof(buf) + buf - p, "rssi           = %d\n", sta->rssi);
++	p += scnprintf(p, sizeof(buf) + buf - p, "avg rssi       = %lu\n", dbg_ewma_read(&sta->avg_rssi));
++	p += scnprintf(p, sizeof(buf) + buf - p, "noise          = %d\n", sta->noise);
++	p += scnprintf(p, sizeof(buf) + buf - p, "avg noise      = %lu\n", -dbg_ewma_read(&sta->avg_noise));
++	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[0]  = %d\n", sta->chain_rssi[0]);
++	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[1]  = %d\n", sta->chain_rssi[1]);
++	p += scnprintf(p, sizeof(buf) + buf - p, "chain rssi[2]  = %d\n", sta->chain_rssi[2]);
++	return simple_read_from_buffer(userbuf, count, ppos, buf, p-buf);
++}
++STA_OPS(info);
++
+ static ssize_t sta_flags_read(struct file *file, char __user *userbuf,
+ 			      size_t count, loff_t *ppos)
+ {
+@@ -360,6 +384,7 @@ void ieee80211_sta_debugfs_add(struct st
+ 	if (!sta->debugfs.dir)
+ 		return;
+ 
++	DEBUGFS_ADD(info);
+ 	DEBUGFS_ADD(flags);
+ 	DEBUGFS_ADD(num_ps_buf_frames);
+ 	DEBUGFS_ADD(last_seq_ctrl);

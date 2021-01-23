@@ -1,0 +1,21 @@
+Index: batman-adv-2016.5/net/batman-adv/bat_algo.c
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/bat_algo.c
++++ batman-adv-2016.5/net/batman-adv/bat_algo.c
+@@ -33,7 +33,7 @@
+ #include "bat_algo.h"
+ #include "netlink.h"
+ 
+-char batadv_routing_algo[20] = "BATMAN_IV";
++char batadv_routing_algo[20] = "BATMAN_V";
+ static struct hlist_head batadv_algo_list;
+ 
+ /**
+@@ -41,6 +41,7 @@ static struct hlist_head batadv_algo_lis
+  */
+ void batadv_algo_init(void)
+ {
++	printk("%s: default algorithm is %s\n", __func__, batadv_routing_algo);
+ 	INIT_HLIST_HEAD(&batadv_algo_list);
+ }
+ 

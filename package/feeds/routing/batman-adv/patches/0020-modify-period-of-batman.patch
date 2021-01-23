@@ -1,0 +1,19 @@
+Index: batman-adv-2016.5/net/batman-adv/main.h
+===================================================================
+--- batman-adv-2016.5.orig/net/batman-adv/main.h
++++ batman-adv-2016.5/net/batman-adv/main.h
+@@ -42,12 +42,12 @@
+ /* purge originators after time in seconds if no valid packet comes in
+  * -> TODO: check influence on BATADV_TQ_LOCAL_WINDOW_SIZE
+  */
+-#define BATADV_PURGE_TIMEOUT 200000 /* 200 seconds */
++#define BATADV_PURGE_TIMEOUT 6000 /* 6 seconds */
+ #define BATADV_TT_LOCAL_TIMEOUT 600000 /* in milliseconds */
+ #define BATADV_TT_CLIENT_ROAM_TIMEOUT 600000 /* in milliseconds */
+ #define BATADV_TT_CLIENT_TEMP_TIMEOUT 600000 /* in milliseconds */
+ #define BATADV_TT_WORK_PERIOD 5000 /* 5 seconds */
+-#define BATADV_ORIG_WORK_PERIOD 1000 /* 1 second */
++#define BATADV_ORIG_WORK_PERIOD 3000 /* 2 second */
+ #define BATADV_MCAST_WORK_PERIOD 500 /* 0.5 seconds */
+ #define BATADV_DAT_ENTRY_TIMEOUT (5 * 60000) /* 5 mins in milliseconds */
+ /* sliding packet range of received originator messages in sequence numbers

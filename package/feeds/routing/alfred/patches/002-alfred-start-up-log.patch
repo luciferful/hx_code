@@ -1,0 +1,159 @@
+Index: alfred-2016.5/main.c
+===================================================================
+--- alfred-2016.5.orig/main.c
++++ alfred-2016.5/main.c
+@@ -230,6 +230,7 @@ static struct globals *alfred_init(int a
+ 			globals->opmode = OPMODE_MASTER;
+ 			break;
+ 		case 'i':
++			printf("%s: %s\n", __func__,optarg);
+ 			netsock_set_interfaces(globals, optarg);
+ 			break;
+ 		case 'b':
+@@ -299,7 +300,9 @@ int main(int argc, char *argv[])
+ 
+ 	if (!globals)
+ 		return 1;
+-
++	else
++		printf("%s, global is true, mode = %d, path = %s \n", __func__, (int)globals->clientmode, globals->unix_path);
++	
+ 	switch (globals->clientmode) {
+ 	case CLIENT_NONE:
+ 		return alfred_server(globals);
+Index: alfred-2016.5/netsock.c
+===================================================================
+--- alfred-2016.5.orig/netsock.c
++++ alfred-2016.5/netsock.c
+@@ -48,6 +48,28 @@ const struct in6_addr in6addr_localmcast
+ 					       0x00, 0x00, 0x00, 0x00,
+ 					       0x00, 0x00, 0x00, 0x01 } } };
+ 
++static void print_mac(const char *func, char *mac)
++{
++	int i;
++	printf("%s, mac = ", func);
++	for(i = 0; i < 6; i++)
++		printf("%02x:", mac[i]);
++	printf("\n");
++	return;
++}
++
++static void print_ipv6(const char *func, char *ip)
++{
++        int i;
++        printf("%s, ipv6 = ", func);
++        for(i = 0; i < 16; i++)
++                printf("%02x:", ip[i]);
++        printf("\n");
++        return;
++}
++
++
++
+ static int server_compare(void *d1, void *d2)
+ {
+ 	struct server *s1 = d1, *s2 = d2;
+@@ -137,6 +159,7 @@ int netsock_set_interfaces(struct global
+ 
+ 		interface = malloc(sizeof(*interface));
+ 		if (!interface) {
++			printf("%s:Error malloc interface %s error!\n", __func__, interfaces);
+ 			netsock_close_all(globals);
+ 			return -ENOMEM;
+ 		}
+@@ -151,6 +174,7 @@ int netsock_set_interfaces(struct global
+ 
+ 		interface->interface = strdup(token);
+ 		if (!interface->interface) {
++			printf("%s:Error strdup token %s error, interface = %s!\n", __func__, token, interfaces);
+ 			free(interface);
+ 			netsock_close_all(globals);
+ 			return -ENOMEM;
+@@ -159,14 +183,19 @@ int netsock_set_interfaces(struct global
+ 		interface->server_hash = hash_new(64, server_compare,
+ 						  server_choose);
+ 		if (!interface->server_hash) {
++			printf("%s:Error interface %s server_hash is NULL error!\n", __func__, interfaces);
+ 			free(interface->interface);
+ 			free(interface);
+ 			netsock_close_all(globals);
+ 			return -ENOMEM;
+ 		}
++		
++		printf("%s:Success!\n", __func__);
+ 
+ 		list_add_tail(&interface->list, &globals->interfaces);
+ 	}
++	if (NULL == token)
++		printf("%s:Error strtok_r function return NULL!\n", __func__);
+ 
+ 	return 0;
+ }
+@@ -251,7 +280,9 @@ static int netsock_open(struct interface
+ 	}
+ 
+ 	memcpy(&interface->hwaddr, &ifr.ifr_hwaddr.sa_data, 6);
++	print_mac(__func__, ifr.ifr_hwaddr.sa_data);
+ 	mac_to_ipv6(&interface->hwaddr, &interface->address);
++	print_ipv6(__func__, interface->address.s6_addr);
+ 
+ 	memset(&sin6, 0, sizeof(sin6));
+ 	sin6.sin6_port = htons(ALFRED_PORT);
+Index: alfred-2016.5/server.c
+===================================================================
+--- alfred-2016.5.orig/server.c
++++ alfred-2016.5/server.c
+@@ -341,26 +341,43 @@ int alfred_server(struct globals *global
+ 	fd_set fds, errfds;
+ 	int num_socks;
+ 
++	printf("start %s......\n", __func__);
+ 	if (create_hashes(globals))
++	{
++		printf("%s: create hashes error!\n", __func__);
+ 		return -1;
++	}
++	printf("%s: create_hashes success !\n", __func__);
+ 
+ 	if (unix_sock_open_daemon(globals))
++	{
++		printf("%s: unix_sock_open_daemon return NULL!\n", __func__);
+ 		return -1;
++	}
++	printf("%s: unix_sock_open_daemon success !\n", __func__);
+ 
+ 	if (list_empty(&globals->interfaces)) {
+ 		fprintf(stderr, "Can't start server: interface missing\n");
++		printf("%s: Can't start server: interface missing\n", __func__);
+ 		return -1;
+ 	}
++	printf("%s: start server success !\n", __func__);
+ 
+ 	if (strcmp(globals->mesh_iface, "none") != 0 &&
+ 	    batadv_interface_check(globals->mesh_iface) < 0)
++	{
++		printf("%s: batadv_interface_check error!\n", __func__);
+ 		return -1;
++	}
++	printf("%s: interface check success !\n", __func__);
+ 
+ 	num_socks = netsock_open_all(globals);
+ 	if (num_socks <= 0) {
+-		fprintf(stderr, "Failed to open interfaces\n");
++		//fprintf(stderr, "Failed to open interfaces\n");
++		printf("%s:Failed to open interfaces\n", __func__);
+ 		return -1;
+ 	}
++	printf("%s: open all netsock success, sock num = %d!\n", __func__, num_socks);
+ 
+ 	if (num_socks > 1 && globals->opmode == OPMODE_SLAVE) {
+ 		fprintf(stderr, "More than one interface specified in slave mode\n");
+@@ -369,6 +386,7 @@ int alfred_server(struct globals *global
+ 
+ 	clock_gettime(CLOCK_MONOTONIC, &last_check);
+ 	globals->if_check = last_check;
++	printf("%s: check success\n", __func__);
+ 
+ 	while (1) {
+ 		clock_gettime(CLOCK_MONOTONIC, &now);

@@ -1,0 +1,132 @@
+--- a/batman_adv.h
++++ b/batman_adv.h
+@@ -136,6 +136,11 @@ enum batadv_nl_attrs {
+ 	BATADV_ATTR_BLA_VID,
+ 	BATADV_ATTR_BLA_BACKBONE,
+ 	BATADV_ATTR_BLA_CRC,
++	BATADV_ATTR_ORIG_SIG,
++	BATADV_ATTR_ORIG_SIG_AVG,
++	BATADV_ATTR_ORIG_FLAG,
++	BATADV_ATTR_ORIG_HOSTNAME,
++	BATADV_ATTR_ORIG_IPV4,
+ 	/* add attributes above here, update the policy in netlink.c */
+ 	__BATADV_ATTR_AFTER_LAST,
+ 	NUM_BATADV_ATTR = __BATADV_ATTR_AFTER_LAST,
+--- a/netlink.c
++++ b/netlink.c
+@@ -93,6 +93,11 @@ struct nla_policy batadv_netlink_policy[
+ 					    .minlen = ETH_ALEN,
+ 					    .maxlen = ETH_ALEN },
+ 	[BATADV_ATTR_BLA_CRC]		= { .type = NLA_U16 },
++	[BATADV_ATTR_ORIG_SIG]		= { .type = NLA_U8 },
++	[BATADV_ATTR_ORIG_SIG_AVG]	= { .type = NLA_U8 },
++	[BATADV_ATTR_ORIG_FLAG]		= { .type = NLA_U32 },
++	[BATADV_ATTR_ORIG_HOSTNAME]     = { .type = NLA_STRING },
++        [BATADV_ATTR_ORIG_IPV4]         = { .type = NLA_STRING },
+ };
+ 
+ int missing_mandatory_attrs(struct nlattr *attrs[],  const int mandatory[],
+--- a/vis/vis.c
++++ b/vis/vis.c
+@@ -580,6 +580,10 @@ static const int parse_orig_list_mandato
+ 	BATADV_ATTR_NEIGH_ADDRESS,
+ 	//BATADV_ATTR_TQ,
+ 	BATADV_ATTR_HARD_IFINDEX,
++	BATADV_ATTR_ORIG_SIG,
++	BATADV_ATTR_ORIG_SIG_AVG,
++	BATADV_ATTR_ORIG_HOSTNAME,
++	BATADV_ATTR_ORIG_IPV4
+ };
+ 
+ static int parse_orig_list_netlink_cb(struct nl_msg *msg, void *arg)
+@@ -590,11 +594,16 @@ static int parse_orig_list_netlink_cb(st
+ 	struct vis_netlink_opts *opts;
+ 	struct genlmsghdr *ghdr;
+ 	struct vis_list_entry *v_entry;
++	int8_t sig, sig_avg;
++	char *name;
++	char *ipv4;
+ 	uint8_t *orig;
+ 	uint8_t *neigh;
+ 	uint8_t tq;
+ 	uint32_t hardif;
+ 
++	sig = 0;	sig_avg = 0;
++
+ 	opts = container_of(query_opts, struct vis_netlink_opts,
+ 			    query_opts);
+ 
+@@ -613,7 +622,10 @@ static int parse_orig_list_netlink_cb(st
+ 
+ 	if (missing_mandatory_attrs(attrs, parse_orig_list_mandatory,
+ 				    ARRAY_SIZE(parse_orig_list_mandatory)))
++	{
++		printf("%s: element miss error!\n", __func__);
+ 		return NL_OK;
++	}
+ 
+ 	if (!attrs[BATADV_ATTR_FLAG_BEST])
+ 		return NL_OK;
+@@ -622,6 +634,11 @@ static int parse_orig_list_netlink_cb(st
+ 	neigh = nla_data(attrs[BATADV_ATTR_NEIGH_ADDRESS]);
+ 	//tq = nla_get_u8(attrs[BATADV_ATTR_TQ]);
+ 	hardif = nla_get_u32(attrs[BATADV_ATTR_HARD_IFINDEX]);
++	sig = (int8_t)nla_get_u8(attrs[BATADV_ATTR_ORIG_SIG]);
++	sig_avg = (int8_t)nla_get_u8(attrs[BATADV_ATTR_ORIG_SIG_AVG]);
++	name = nla_data(attrs[BATADV_ATTR_ORIG_HOSTNAME]);
++	ipv4 = nla_data(attrs[BATADV_ATTR_ORIG_IPV4]);
++
+ 
+ //	if (tq < 1)
+ //		return NL_OK;
+@@ -636,6 +653,11 @@ static int parse_orig_list_netlink_cb(st
+ 	memcpy(v_entry->v.mac, orig, ETH_ALEN);
+ 	v_entry->v.ifindex = get_if_index_devindex(opts->globals, hardif);
+ 	//v_entry->v.qual = tq;
++	v_entry->v.signal = sig;
++	v_entry->v.signal_avg = sig_avg;
++	memcpy(v_entry->v.name, name, strlen(name)+1);
++	memcpy(v_entry->v.ipv4, ipv4, strlen(ipv4)+1);
++
+ 	list_add_tail(&v_entry->list, &opts->globals->entry_list);
+ 
+ 	return NL_OK;
+@@ -1061,10 +1083,15 @@ static void vis_jsondoc_entries(uint8_t
+ 
+ 		printf("         { \"router\" : \"%s\",\n",
+ 		       mac_to_str(ifaces[vis_entries[i].ifindex].mac));
+-		printf("           \"neighbor\" : \"%s\" }",
++		printf("           \"neighbor\" : \"%s\",\n",
+ 		       mac_to_str(vis_entries[i].mac));
+ //		printf("           \"metric\" : \"%3.3f\" }",
+ //		       255.0 / ((float)vis_entries[i].qual));
++		printf("           \"signal\"         : \"%d\",\n", vis_entries[i].signal);
++		printf("           \"average signal\" : \"%d\",\n", vis_entries[i].signal_avg);
++		printf("           \"name\"           : \"%s\",\n", vis_entries[i].name);
++		printf("           \"ipv4\"           : \"%s\"}", vis_entries[i].ipv4);
++
+ 	}
+ 
+ 	printf("\n      ],\n");
+@@ -1165,7 +1192,7 @@ static int vis_read_answer(struct global
+ 		ifaces = vis_data->ifaces;
+ 		vis_entries = (struct vis_entry *) &ifaces[vis_data->iface_n];
+ 
+-		printf("%s, iface = %d\n", __func__, vis_data->iface_n);
++		//printf("%s, iface = %d\n", __func__, vis_data->iface_n);
+ 		ops->interfaces(vis_data->iface_n, ifaces);
+ 
+ 		if (vis_data->entries_n == 0)
+--- a/vis/vis.h
++++ b/vis/vis.h
+@@ -65,6 +65,10 @@ struct vis_entry {
+ 	uint8_t ifindex; 	/* 255 = TT */
+ 	uint8_t qual;		/* zero for TT (maybe flags in the future?)
+ 				 * TQ for batman-adv */
++	int8_t signal;
++	int8_t signal_avg;
++	uint8_t name[32];
++	uint8_t ipv4[32];
+ }__packed;
+ 
+ struct vis_v1 {
